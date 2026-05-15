@@ -1,4 +1,6 @@
-{
+"scripts": {
+  "start": "node src/server.js"
+}
   "name": "k12net-login",
   "version": "1.0.0",
   "main": "server.js",
