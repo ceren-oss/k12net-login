@@ -2,6 +2,28 @@
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
+## Security: Session Token Invalidation
+The project now supports server-side session token invalidation to ensure secure logout.
+
+### What was added
+- `api/auth/logout.js` now revokes the currently active session token before clearing the cookie.
+- `api/auth/session.js` now checks whether the incoming session token has been revoked.
+- `api/_session.js` now exposes raw token extraction (`getSessionTokenFromRequest`) for revocation checks.
+- `api/_session_revocation.js` was added to manage token hashing, revocation writes, and revocation checks.
+
+### Why this matters
+Previously, logout only cleared the browser cookie. With stateless signed tokens, manually reusing an old cookie could keep a session valid until token expiry. Now, once logout happens, that token is marked as revoked and rejected by the session endpoint.
+
+### Runtime behavior
+- Login creates a signed session token as before.
+- Logout records a revocation marker for the active token and clears the cookie.
+- Any follow-up request using the same old token gets `401` with `Session revoked`.
+
+### Cookie/session environment variables
+- `SESSION_SECRET` (required)
+- `SESSION_COOKIE_DOMAIN` (recommended in production, e.g. `.kesifkutusu.com.tr`)
+- `SESSION_COOKIE_SAMESITE` (`Lax` by default; configurable)
+
 ## Available Scripts
 
 In the project directory, you can run:
