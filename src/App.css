@@ -28,11 +28,57 @@
   color: #61dafb;
 }
 
+.portal-main-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  z-index: 0;
+  transform-origin: center;
+  animation: portal-bg-fade-in 700ms ease-out, portal-bg-pan 16s ease-in-out infinite alternate;
+}
+
+.portal-main-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, rgba(140, 71, 156, 0.1) 34%, rgba(96, 205, 203, 0.08) 70%, rgba(252, 196, 0, 0.06) 100%);
+}
+
+.portal-main-content {
+  position: relative;
+  z-index: 1;
+}
+
 @keyframes App-logo-spin {
   from {
     transform: rotate(0deg);
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes portal-bg-fade-in {
+  from {
+    opacity: 0;
+    filter: saturate(1.02) contrast(1.02);
+  }
+  to {
+    opacity: 0.38;
+    filter: saturate(1.08) contrast(1.04);
+  }
+}
+
+@keyframes portal-bg-pan {
+  0% {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: scale(1.02) translate3d(-0.8%, -0.5%, 0);
+  }
+  100% {
+    transform: scale(1.01) translate3d(0.8%, 0.5%, 0);
   }
 }

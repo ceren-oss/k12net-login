@@ -1,5 +1,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
+import loginBg from './assets/login-bg.png'
+import kesifKutusuLogo from './assets/kesif-kutusu-logo.png'
+import RoleGuideModal from './RoleGuideModal'
+import { downloadSchoolFormReport } from './formExportUtils'
+import useIsMobile from './useIsMobile'
 
 const COLORS = {
   primary: '#8C479C', yellow: '#FCC400', teal: '#60CDCB',
@@ -12,9 +17,9 @@ const fmtDate = (d) => d ? new Date(d).toLocaleDateString('tr-TR') : '-'
 const S = {
   header: { background: COLORS.primary, padding: '16px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
   nav: { background: '#7a3d88', display: 'flex', padding: '0 28px' },
-  navItem: (active) => ({ padding: '12px 16px', cursor: 'pointer', color: active ? '#FCC400' : 'rgba(255,255,255,0.7)', fontWeight: active ? 700 : 400, fontSize: 14, borderBottom: active ? '3px solid #FCC400' : '3px solid transparent' }),
-  main: { padding: '28px 32px', background: COLORS.bg, minHeight: '100vh' },
-  card: { background: '#fff', borderRadius: 14, padding: 20, boxShadow: '0 2px 12px rgba(140,71,156,0.08)', marginBottom: 16 },
+  navItem: (active, mobile = false) => ({ padding: mobile ? '10px 12px' : '12px 16px', cursor: 'pointer', color: active ? '#FCC400' : 'rgba(255,255,255,0.7)', fontWeight: active ? 700 : 400, fontSize: 14, borderBottom: active ? '3px solid #FCC400' : '3px solid transparent', whiteSpace: 'nowrap', flexShrink: 0 }),
+  main: { padding: '28px 32px', background: COLORS.bg, minHeight: '100vh', position: 'relative', overflow: 'hidden' },
+  card: { background: '#fff', borderRadius: 14, padding: 20, boxShadow: '0 2px 12px rgba(140,71,156,0.08)', marginBottom: 16, overflowX: 'auto' },
   btn: (color) => ({ padding: '9px 18px', borderRadius: 9, background: color || COLORS.primary, color: '#fff', border: 'none', fontSize: 13, fontWeight: 700, cursor: 'pointer' }),
   input: { width: '100%', padding: '10px 12px', borderRadius: 9, border: '2px solid #f0e8ff', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' },
   select: { width: '100%', padding: '10px 12px', borderRadius: 9, border: '2px solid #f0e8ff', fontSize: 13, outline: 'none', boxSizing: 'border-box', background: '#fff', fontFamily: 'inherit' },
@@ -24,27 +29,66 @@ const S = {
   badge: (color) => ({ display: 'inline-block', padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: color + '22', color: color }),
   modal: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 },
   modalBox: { background: '#fff', borderRadius: 16, padding: 28, width: 580, maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto' },
+  guideFab: {
+    position: 'fixed',
+    top: 14,
+    right: 14,
+    width: 46,
+    height: 46,
+    borderRadius: 999,
+    border: 'none',
+    background: 'linear-gradient(135deg,#8C479C,#4F66D6,#60CDCB)',
+    color: '#fff',
+    fontSize: 21,
+    cursor: 'pointer',
+    boxShadow: '0 10px 26px rgba(44,40,117,0.34)',
+    zIndex: 1301,
+  },
 }
+
+const BASE_URL = window.location.origin
+const ACTIVITY_MARKER_GRADE = '__ETKINLIK__'
+const PRODUCT_MARKER_GRADE = '__URUN__'
 
 export default function DealerPortal({ dealer, onLogout }) {
   const [page, setPage] = useState('dashboard')
+  const [showGuide, setShowGuide] = useState(true)
   const [orders, setOrders] = useState([])
   const [preOrders, setPreOrders] = useState([])
   const [payments, setPayments] = useState([])
   const [checks, setChecks] = useState([])
   const [products, setProducts] = useState([])
   const [dealerPrices, setDealerPrices] = useState([])
+  const [schoolForms, setSchoolForms] = useState([])
+  const isMobile = useIsMobile(960)
 
   useEffect(() => { loadAll() }, [])
+  useEffect(() => {
+    const channel = supabase
+      .channel(`dealer-live-${dealer.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `dealer_id=eq.${dealer.id}` }, () => { loadAll().catch(() => {}) })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pre_orders', filter: `dealer_id=eq.${dealer.id}` }, () => { loadAll().catch(() => {}) })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments', filter: `dealer_id=eq.${dealer.id}` }, () => { loadAll().catch(() => {}) })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'checks', filter: `dealer_id=eq.${dealer.id}` }, () => { loadAll().catch(() => {}) })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'school_forms', filter: `dealer_id=eq.${dealer.id}` }, () => { loadAll().catch(() => {}) })
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [dealer.id])
+  useEffect(() => {
+    const timer = setInterval(() => { loadAll().catch(() => {}) }, 15000)
+    return () => clearInterval(timer)
+  }, [dealer.id])
 
   const loadAll = async () => {
-    const [o, po, p, c, pr, dp] = await Promise.all([
+    const [o, po, p, c, pr, dp, sf] = await Promise.all([
       supabase.from('orders').select('*').eq('dealer_id', dealer.id).order('created_at', { ascending: false }),
       supabase.from('pre_orders').select('*, pre_order_items(*)').eq('dealer_id', dealer.id).order('created_at', { ascending: false }),
       supabase.from('payments').select('*').eq('dealer_id', dealer.id).order('created_at', { ascending: false }),
       supabase.from('checks').select('*').eq('dealer_id', dealer.id).order('due_date'),
       supabase.from('products').select('*').order('id'),
       supabase.from('dealer_prices').select('*').eq('dealer_id', dealer.id),
+      supabase.from('school_forms').select('*, school_form_items(*)').eq('dealer_id', dealer.id).order('created_at', { ascending: false }),
     ])
     if (o.data) setOrders(o.data)
     if (po.data) setPreOrders(po.data)
@@ -52,6 +96,7 @@ export default function DealerPortal({ dealer, onLogout }) {
     if (c.data) setChecks(c.data)
     if (pr.data) setProducts(pr.data)
     if (dp.data) setDealerPrices(dp.data)
+    if (sf.data) setSchoolForms(sf.data)
   }
 
   const getPrice = (productId) => {
@@ -61,106 +106,216 @@ export default function DealerPortal({ dealer, onLogout }) {
     return prod?.default_price || 0
   }
 
-  const confirmPreOrder = async (po) => {
-    if (!window.confirm(po.school_name + ' on siparisi kesinlestirilsin mi?')) return
-    const items = po.pre_order_items || []
+  const createFormLink = async (po) => {
+    // Zaten link var mı
+    const existing = schoolForms.find(sf => sf.pre_order_id === po.id)
+    if (existing) {
+      const link = BASE_URL + '/form/' + existing.token
+      navigator.clipboard.writeText(link).catch(() => {})
+      alert('Link kopyalandı!\n\n' + link)
+      return
+    }
+    const token = Math.random().toString(36).substring(2) + Date.now().toString(36)
+    const formId = 'FORM-' + Date.now().toString().slice(-6)
+    await supabase.from('school_forms').insert([{
+      id: formId, pre_order_id: po.id, dealer_id: dealer.id, token, status: 'bekliyor', school_name: po.school_name
+    }])
+    const link = BASE_URL + '/form/' + token
+    navigator.clipboard.writeText(link).catch(() => {})
+    alert('Link oluşturuldu ve kopyalandı!\n\n' + link)
+    loadAll()
+  }
+  const updatePreOrder = async (preOrderId, preOrderPayload, itemsPayload) => {
+    const current = preOrders.find(po => po.id === preOrderId)
+    if (current && current.status !== 'on_siparis') {
+      alert('Kesinleşen ön siparişler düzenlenemez.')
+      return false
+    }
+    await supabase.from('pre_orders').update(preOrderPayload).eq('id', preOrderId)
+    await supabase.from('pre_order_items').delete().eq('pre_order_id', preOrderId)
+    if ((itemsPayload || []).length > 0) {
+      await supabase.from('pre_order_items').insert(itemsPayload.map(item => ({
+        pre_order_id: preOrderId,
+        grade: '-',
+        branch: '-',
+        teacher: '-',
+        product_id: parseInt(item.product_id),
+        qty: parseInt(item.qty),
+        unit_price: parseFloat(item.unit_price) || 0,
+      })))
+    }
+    await loadAll()
+    return true
+  }
+  const finalizePreOrder = async (po) => {
+    if (po.status !== 'on_siparis') return false
+    if (!window.confirm('Ön sipariş kesinleştirilsin mi? Kesinleştirdikten sonra düzenleme/silme kapatılacaktır.')) return false
+    await supabase.from('pre_orders').update({ status: 'kesinlesti' }).eq('id', po.id)
+    await loadAll()
+    return true
+  }
+  const deletePreOrder = async (po) => {
+    if (po.status !== 'on_siparis') {
+      alert('Sadece kesinleşmemiş ön siparişler silinebilir.')
+      return false
+    }
+    const linkedForm = schoolForms.find(sf => sf.pre_order_id === po.id)
+    if (linkedForm && linkedForm.status !== 'bekliyor') {
+      alert('Okul formu doldurulmuş veya onaylanmış sipariş silinemez.')
+      return false
+    }
+    if (!window.confirm(`${po.school_name} için ön sipariş silinsin mi?`)) return false
+    if (linkedForm) {
+      await supabase.from('school_form_items').delete().eq('form_id', linkedForm.id)
+      await supabase.from('school_forms').delete().eq('id', linkedForm.id)
+    }
+    await supabase.from('pre_order_items').delete().eq('pre_order_id', po.id)
+    await supabase.from('pre_orders').delete().eq('id', po.id)
+    await loadAll()
+    return true
+  }
+
+  const approveForm = async (sf, po) => {
+    if (!window.confirm('Bu formu onaylayıp siparişi kesinleştirmek istiyor musunuz?')) return
+    const items = po?.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
+
     await supabase.from('orders').insert([{
-      id: orderId, dealer_id: dealer.id, school_name: po.school_name,
-      season: po.season, total, invoice_status: 'kesilmedi',
-      dia_status: false, cargo_status: 'faturalanmadi', note: po.note, status: 'beklemede'
+      id: orderId, dealer_id: dealer.id, school_name: sf.school_name,
+      season: po?.season, total, invoice_status: 'kesilmedi',
+      dia_status: false, cargo_status: 'faturalanmadi', status: 'beklemede',
+      note: 'Okul formu ile oluşturuldu'
     }])
     for (const item of items) {
-      await supabase.from('order_items').insert([{
-        order_id: orderId, product_id: item.product_id,
-        qty: item.qty, unit_price: item.unit_price, free_qty: 0
-      }])
+      await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
+    }
+    const schoolFormItems = sf?.school_form_items || []
+    const classRows = schoolFormItems
+      .filter(item => item.grade && item.grade !== ACTIVITY_MARKER_GRADE && item.grade !== PRODUCT_MARKER_GRADE && parseInt(item.qty) > 0)
+      .map(item => ({
+        order_id: orderId,
+        grade: item.grade,
+        branch: item.branch || '',
+        teacher: item.teacher || '',
+        qty: parseInt(item.qty) || 0,
+      }))
+    const activityRows = [...new Set(
+      schoolFormItems
+        .filter(item => item.grade === ACTIVITY_MARKER_GRADE && item.branch && String(item.teacher || '').trim())
+        .map(item => `${item.branch}:::${String(item.teacher || '').trim()}`)
+    )].map(key => {
+      const [level, activityName] = key.split(':::')
+      return {
+        order_id: orderId,
+        grade: ACTIVITY_MARKER_GRADE,
+        branch: level,
+        teacher: activityName,
+        qty: 0,
+      }
+    })
+    const orderClassRows = [...classRows, ...activityRows]
+    if (orderClassRows.length > 0) {
+      await supabase.from('order_class_items').insert(orderClassRows)
     }
     const { data: freshDealer } = await supabase.from('dealers').select('balance').eq('id', dealer.id).single()
     await supabase.from('dealers').update({ balance: (freshDealer?.balance || 0) - total }).eq('id', dealer.id)
     await supabase.from('pre_orders').update({ status: 'siparise_donustu' }).eq('id', po.id)
+    await supabase.from('school_forms').update({ status: 'onaylandi' }).eq('id', sf.id)
     loadAll()
-    alert('Siparisimiz alindi! Siparis No: ' + orderId)
+    alert('Sipariş oluşturuldu: ' + orderId)
   }
 
   const NAV = [
-    { id: 'dashboard', label: 'Ozet' },
-    { id: 'preorder', label: 'On Siparis Ver' },
-    { id: 'preorders', label: 'On Siparislerim' },
-    { id: 'orders', label: 'Siparislerim' },
-    { id: 'payments', label: 'Odemelerim' },
-    { id: 'checks', label: 'Ceklerim' },
+    { id: 'dashboard', label: 'Özet' },
+    { id: 'preorder', label: 'Ön Sipariş Ver' },
+    { id: 'preorders', label: 'Ön Siparişlerim' },
+    { id: 'orders', label: 'Siparişlerim' },
+    { id: 'payments', label: 'Ödemelerim' },
+    { id: 'checks', label: 'Çeklerim' },
   ]
 
   return (
     <div style={{ fontFamily: 'inherit' }}>
-      <div style={S.header}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ fontSize: 28 }}>🔬</div>
+      <button style={{ ...S.guideFab, top: isMobile ? 'auto' : 14, bottom: isMobile ? 14 : 'auto' }} onClick={() => setShowGuide(true)} title="Portal Kullanım Kılavuzu" aria-label="Portal Kullanım Kılavuzu">
+        🧭
+      </button>
+      <div style={isMobile ? { ...S.header, padding: '12px 14px', flexDirection: 'column', alignItems: 'stretch', gap: 10 } : S.header}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <img src={kesifKutusuLogo} alt="Keşif Kutusu" style={{ width: 170, maxWidth: '42vw', height: 'auto' }} />
           <div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: '#fff' }}>Kesif Kutusu</div>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>Bayi Portali</div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)', textTransform: 'uppercase', letterSpacing: '0.7px', fontWeight: 700 }}>Bayi Portalı</div>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{ textAlign: 'right' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, justifyContent: isMobile ? 'space-between' : 'flex-end' }}>
+          <div style={{ textAlign: isMobile ? 'left' : 'right' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>{dealer.name}</div>
             <div style={{ fontSize: 12, color: (dealer.balance || 0) < 0 ? '#ffb3b3' : '#b3ffb3' }}>Bakiye: {fmt(dealer.balance)}</div>
           </div>
-          <button onClick={onLogout} style={{ ...S.btn('rgba(255,255,255,0.2)'), fontSize: 12 }}>Cikis</button>
+          <button onClick={onLogout} style={{ ...S.btn('rgba(255,255,255,0.2)'), fontSize: 12 }}>Çıkış</button>
         </div>
       </div>
-      <div style={S.nav}>
-        {NAV.map(n => <div key={n.id} style={S.navItem(page === n.id)} onClick={() => setPage(n.id)}>{n.label}</div>)}
+      <div style={isMobile ? { ...S.nav, padding: '0 10px', overflowX: 'auto', gap: 4 } : S.nav}>
+        {NAV.map(n => <div key={n.id} style={S.navItem(page === n.id, isMobile)} onClick={() => setPage(n.id)}>{n.label}</div>)}
       </div>
-      <div style={S.main}>
-        {page === 'dashboard' && <Dashboard dealer={dealer} orders={orders} payments={payments} checks={checks} preOrders={preOrders} />}
-        {page === 'preorder' && <PreOrder dealer={dealer} products={products} getPrice={getPrice} loadAll={loadAll} />}
-        {page === 'preorders' && <PreOrders preOrders={preOrders} products={products} confirmPreOrder={confirmPreOrder} />}
-        {page === 'orders' && <Orders orders={orders} />}
-        {page === 'payments' && <PaymentsView payments={payments} checks={checks} />}
-        {page === 'checks' && <ChecksView checks={checks} />}
+      <div style={isMobile ? { ...S.main, padding: '14px 12px' } : S.main}>
+        <div className="portal-main-bg" style={{ backgroundImage: `url(${loginBg})`, opacity: 0.38 }} />
+        <div className="portal-main-overlay" />
+        <div className="portal-main-content">
+          {page === 'dashboard' && <Dashboard dealer={dealer} orders={orders} payments={payments} checks={checks} preOrders={preOrders} schoolForms={schoolForms} isMobile={isMobile} />}
+          {page === 'preorder' && <PreOrder dealer={dealer} products={products} getPrice={getPrice} loadAll={loadAll} isMobile={isMobile} />}
+          {page === 'preorders' && <PreOrders preOrders={preOrders} products={products} schoolForms={schoolForms} createFormLink={createFormLink} approveForm={approveForm} updatePreOrder={updatePreOrder} deletePreOrder={deletePreOrder} finalizePreOrder={finalizePreOrder} getPrice={getPrice} isMobile={isMobile} />}
+          {page === 'orders' && <Orders orders={orders} products={products} isMobile={isMobile} />}
+          {page === 'payments' && <PaymentsView payments={payments} checks={checks} isMobile={isMobile} />}
+          {page === 'checks' && <ChecksView checks={checks} isMobile={isMobile} />}
+        </div>
       </div>
+      <RoleGuideModal role="dealer" open={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   )
 }
 
-function Dashboard({ dealer, orders, payments, checks, preOrders }) {
+function Dashboard({ dealer, orders, payments, checks, preOrders, schoolForms, isMobile }) {
   const pendingChecks = checks.filter(c => c.status !== 'tahsil_edildi')
-  const pendingPreOrders = preOrders.filter(p => p.status === 'on_siparis')
+  const pendingForms = schoolForms.filter(sf => sf.status === 'tamamlandi')
 
   return (
     <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Hos geldiniz, {dealer.contact || dealer.name}!</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 24 }}>
+      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Hoş geldiniz, {dealer.contact || dealer.name}!</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4,1fr)', gap: 16, marginBottom: 24 }}>
         <div style={{ ...S.card, borderTop: '4px solid ' + COLORS.primary, marginBottom: 0 }}>
           <div style={{ fontSize: 11, color: '#888', fontWeight: 700, textTransform: 'uppercase' }}>Bakiye</div>
           <div style={{ fontSize: 24, fontWeight: 800, color: (dealer.balance || 0) < 0 ? COLORS.orange : COLORS.green, marginTop: 4 }}>{fmt(dealer.balance)}</div>
         </div>
         <div style={{ ...S.card, borderTop: '4px solid ' + COLORS.teal, marginBottom: 0 }}>
-          <div style={{ fontSize: 11, color: '#888', fontWeight: 700, textTransform: 'uppercase' }}>Toplam Siparis</div>
+          <div style={{ fontSize: 11, color: '#888', fontWeight: 700, textTransform: 'uppercase' }}>Toplam Sipariş</div>
           <div style={{ fontSize: 24, fontWeight: 800, color: COLORS.teal, marginTop: 4 }}>{orders.length}</div>
         </div>
         <div style={{ ...S.card, borderTop: '4px solid ' + COLORS.yellow, marginBottom: 0 }}>
-          <div style={{ fontSize: 11, color: '#888', fontWeight: 700, textTransform: 'uppercase' }}>Bekleyen Cek</div>
-          <div style={{ fontSize: 24, fontWeight: 800, color: COLORS.yellow, marginTop: 4 }}>{pendingChecks.length} adet</div>
+          <div style={{ fontSize: 11, color: '#888', fontWeight: 700, textTransform: 'uppercase' }}>Bekleyen Çek</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: COLORS.yellow, marginTop: 4 }}>{pendingChecks.length}</div>
+        </div>
+        <div style={{ ...S.card, borderTop: '4px solid ' + COLORS.orange, marginBottom: 0 }}>
+          <div style={{ fontSize: 11, color: '#888', fontWeight: 700, textTransform: 'uppercase' }}>Onay Bekleyen Form</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: COLORS.orange, marginTop: 4 }}>{pendingForms.length}</div>
         </div>
       </div>
-      {pendingPreOrders.length > 0 && (
+
+      {pendingForms.length > 0 && (
         <div style={{ ...S.card, borderLeft: '4px solid ' + COLORS.orange }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.orange, marginBottom: 8 }}>⏳ Kesinlesmemis On Siparisleriniz</div>
-          {pendingPreOrders.map(po => (
-            <div key={po.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f0e8ff' }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>{po.school_name}</span>
-              <span style={S.badge(COLORS.orange)}>Bekliyor</span>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.orange, marginBottom: 8 }}>📋 Onay Bekleyen Okul Formları</div>
+          {pendingForms.map(sf => (
+            <div key={sf.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', padding: '8px 0', borderBottom: '1px solid #f0e8ff', flexDirection: isMobile ? 'column' : 'row', gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{sf.school_name}</span>
+              <span style={S.badge(COLORS.orange)}>Onay Bekliyor</span>
             </div>
           ))}
         </div>
       )}
+
       <div style={S.card}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary, marginBottom: 12 }}>Son Siparisler</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary, marginBottom: 12 }}>Son Siparişler</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
           <thead><tr><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Tutar</th><th style={S.th}>Fatura</th></tr></thead>
           <tbody>{orders.slice(0, 5).map(o => (
             <tr key={o.id}>
@@ -176,7 +331,7 @@ function Dashboard({ dealer, orders, payments, checks, preOrders }) {
   )
 }
 
-function PreOrder({ dealer, products, getPrice, loadAll }) {
+function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
   const [schoolName, setSchoolName] = useState('')
   const [address, setAddress] = useState('')
   const [season, setSeason] = useState('2026-2027')
@@ -196,7 +351,6 @@ function PreOrder({ dealer, products, getPrice, loadAll }) {
 
   const addItem = () => setItems(prev => [...prev, { product_id: '', qty: '', unit_price: 0 }])
   const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx))
-
   const total = items.reduce((s, i) => s + ((parseInt(i.qty) || 0) * (i.unit_price || 0)), 0)
   const filledItems = items.filter(i => i.product_id && parseInt(i.qty) > 0)
 
@@ -209,8 +363,7 @@ function PreOrder({ dealer, products, getPrice, loadAll }) {
       pre_order_id: preOrderId, grade: '-', branch: '-', teacher: '-',
       product_id: parseInt(i.product_id), qty: parseInt(i.qty), unit_price: i.unit_price,
     })))
-    setSubmitted(true)
-    setLoading(false)
+    setSubmitted(true); setLoading(false)
     setSchoolName(''); setAddress(''); setNote('')
     setItems([{ product_id: '', qty: '', unit_price: 0 }])
     loadAll()
@@ -219,116 +372,257 @@ function PreOrder({ dealer, products, getPrice, loadAll }) {
 
   return (
     <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>On Siparis Ver</h2>
+      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Ön Sipariş Ver</h2>
       {submitted && (
         <div style={{ background: COLORS.green + '22', border: '2px solid ' + COLORS.green, borderRadius: 10, padding: 16, marginBottom: 20, color: COLORS.green, fontWeight: 700, textAlign: 'center' }}>
-          On siparisimiz alindi! On Siparislerim bolumunden kesinlestirebilirsiniz.
+          Ön siparişimiz alındı! Ön Siparişlerim bölümünden link oluşturabilirsiniz.
         </div>
       )}
       <div style={S.card}>
         <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Kurum Bilgileri</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
-          <div><label style={S.label}>Kurum Adi *</label><input style={S.input} value={schoolName} onChange={e => setSchoolName(e.target.value)} placeholder="Okul / Kurum adi" /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 14, marginBottom: 14 }}>
+          <div><label style={S.label}>Kurum Adı *</label><input style={S.input} value={schoolName} onChange={e => setSchoolName(e.target.value)} placeholder="Okul / Kurum adı" /></div>
           <div><label style={S.label}>Sezon</label><select style={S.select} value={season} onChange={e => setSeason(e.target.value)}><option>2025-2026</option><option>2026-2027</option></select></div>
         </div>
         <div><label style={S.label}>Adres</label><input style={S.input} value={address} onChange={e => setAddress(e.target.value)} placeholder="Kurum adresi" /></div>
       </div>
-
       <div style={S.card}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Urun ve Adet Bilgileri</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ background: COLORS.primary + '11' }}>
-              <th style={S.th}>Urun</th>
-              <th style={{ ...S.th, width: 120 }}>Birim Fiyat</th>
-              <th style={{ ...S.th, width: 100 }}>Toplam Adet</th>
-              <th style={{ ...S.th, width: 120 }}>Toplam</th>
-              <th style={{ ...S.th, width: 40 }}></th>
+        <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Ürün ve Adet Bilgileri</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+          <thead><tr style={{ background: COLORS.primary + '11' }}>
+            <th style={S.th}>Ürün</th>
+            <th style={{ ...S.th, width: 120 }}>Birim Fiyat</th>
+            <th style={{ ...S.th, width: 100 }}>Toplam Adet</th>
+            <th style={{ ...S.th, width: 120 }}>Toplam</th>
+            <th style={{ ...S.th, width: 40 }}></th>
+          </tr></thead>
+          <tbody>{items.map((item, idx) => (
+            <tr key={idx} style={{ background: idx % 2 === 0 ? '#fff' : '#faf6ff' }}>
+              <td style={S.td}><select style={S.select} value={item.product_id} onChange={e => updateItem(idx, 'product_id', e.target.value)}><option value="">Seçiniz...</option>{products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></td>
+              <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>{item.unit_price > 0 ? fmt(item.unit_price) : '-'}</td>
+              <td style={S.td}><input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={item.qty} onChange={e => updateItem(idx, 'qty', e.target.value)} placeholder="0" /></td>
+              <td style={{ ...S.td, textAlign: 'right', fontWeight: 700, color: (parseInt(item.qty) || 0) > 0 ? COLORS.primary : '#ccc' }}>{(parseInt(item.qty) || 0) > 0 ? fmt((parseInt(item.qty) || 0) * (item.unit_price || 0)) : '-'}</td>
+              <td style={S.td}>{idx > 0 && <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeItem(idx)}>✕</button>}</td>
             </tr>
-          </thead>
-          <tbody>
-            {items.map((item, idx) => (
-              <tr key={idx} style={{ background: idx % 2 === 0 ? '#fff' : '#faf6ff' }}>
-                <td style={S.td}>
-                  <select style={S.select} value={item.product_id} onChange={e => updateItem(idx, 'product_id', e.target.value)}>
-                    <option value="">Urun seciniz...</option>
-                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                </td>
-                <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>
-                  {item.unit_price > 0 ? fmt(item.unit_price) : '-'}
-                </td>
-                <td style={S.td}>
-                  <input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={item.qty} onChange={e => updateItem(idx, 'qty', e.target.value)} placeholder="0" />
-                </td>
-                <td style={{ ...S.td, textAlign: 'right', fontWeight: 700, color: (parseInt(item.qty) || 0) > 0 ? COLORS.primary : '#ccc' }}>
-                  {(parseInt(item.qty) || 0) > 0 ? fmt((parseInt(item.qty) || 0) * (item.unit_price || 0)) : '-'}
-                </td>
-                <td style={S.td}>
-                  {idx > 0 && <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeItem(idx)}>✕</button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr style={{ background: COLORS.primary + '11' }}>
-              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.primary }}>GENEL TOPLAM:</td>
-              <td style={{ ...S.td, fontWeight: 800, fontSize: 16, color: COLORS.primary, textAlign: 'right' }}>{fmt(total)}</td>
-              <td style={S.td}></td>
-            </tr>
-          </tfoot>
+          ))}</tbody>
+          <tfoot><tr style={{ background: COLORS.primary + '11' }}>
+            <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.primary }}>GENEL TOPLAM:</td>
+            <td style={{ ...S.td, fontWeight: 800, fontSize: 16, color: COLORS.primary, textAlign: 'right' }}>{fmt(total)}</td>
+            <td style={S.td}></td>
+          </tr></tfoot>
         </table>
         <div style={{ marginTop: 12 }}>
-          <button style={{ ...S.btn(COLORS.teal), fontSize: 12 }} onClick={addItem}>+ Urun Ekle</button>
+          <button style={{ ...S.btn(COLORS.teal), fontSize: 12 }} onClick={addItem}>+ Ürün Ekle</button>
         </div>
       </div>
-
       <div style={S.card}>
         <label style={S.label}>Not</label>
-        <input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Varsa eklemek istediginiz not..." />
+        <input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Not..." />
       </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button style={S.btn(COLORS.primary)} onClick={save} disabled={loading || !schoolName || filledItems.length === 0}>
-          {loading ? 'Gonderiliyor...' : 'On Siparis Gonder'}
+      <div style={{ display: 'flex', justifyContent: isMobile ? 'stretch' : 'flex-end' }}>
+        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || filledItems.length === 0}>
+          {loading ? 'Gönderiliyor...' : 'Ön Sipariş Gönder'}
         </button>
       </div>
     </div>
   )
 }
 
-function PreOrders({ preOrders, products, confirmPreOrder }) {
+function PreOrders({ preOrders, products, schoolForms, createFormLink, approveForm, updatePreOrder, deletePreOrder, finalizePreOrder, getPrice, isMobile }) {
+  const emptyItem = { product_id: '', qty: '', unit_price: 0 }
   const [detail, setDetail] = useState(null)
+  const [formDetail, setFormDetail] = useState(null)
+  const [editModal, setEditModal] = useState(false)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editingPreOrder, setEditingPreOrder] = useState(null)
+  const [editForm, setEditForm] = useState({ school_name: '', address: '', season: '2026-2027', note: '' })
+  const [editItems, setEditItems] = useState([{ ...emptyItem }])
+  const [filters, setFilters] = useState({ id: '', school: '', season: '', total: '', formStatus: '', status: '' })
+  const getFormClassRows = (schoolForm) => (schoolForm?.school_form_items || []).filter(item => item.grade !== '__URUN__' && item.grade !== '__ETKINLIK__')
+  const getFormActivitiesByLevel = (schoolForm) => (schoolForm?.school_form_items || [])
+    .filter(item => item.grade === '__ETKINLIK__')
+    .reduce((acc, item) => {
+      const level = item.branch
+      const activityName = (item.teacher || '').trim()
+      if (!level || !activityName) return acc
+      if (!acc[level]) acc[level] = []
+      if (!acc[level].includes(activityName)) acc[level].push(activityName)
+      return acc
+    }, {})
+  const formClassRows = getFormClassRows(formDetail)
+  const formActivitiesByLevel = getFormActivitiesByLevel(formDetail)
+  const downloadApprovedForm = (schoolForm) => {
+    downloadSchoolFormReport({
+      form: schoolForm,
+      classRows: getFormClassRows(schoolForm),
+      activitiesByLevel: getFormActivitiesByLevel(schoolForm),
+      filenamePrefix: 'onayli-okul-formu',
+    })
+  }
+
   const STATUS = {
-    on_siparis: { label: 'Kesinlestirilmedi', color: COLORS.orange },
-    siparise_donustu: { label: 'Kesinlesti', color: COLORS.green },
-    iptal: { label: 'Iptal', color: '#aaa' }
+    on_siparis: { label: 'Bekliyor', color: COLORS.orange },
+    kesinlesti: { label: 'Kesinleşti (Bayi)', color: COLORS.primary },
+    siparise_donustu: { label: 'Kesinleşti', color: COLORS.green },
+    iptal: { label: 'İptal', color: '#aaa' }
+  }
+
+  const FORM_STATUS = {
+    bekliyor: { label: 'Form Gönderilmedi', color: '#aaa' },
+    tamamlandi: { label: 'Okul Doldurdu', color: COLORS.orange },
+    onaylandi: { label: 'Onaylandı', color: COLORS.green }
+  }
+  const normalizeText = (value) => String(value || '').toLocaleLowerCase('tr-TR')
+  const updateFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }))
+  const filteredPreOrders = preOrders.filter(po => {
+    const items = po.pre_order_items || []
+    const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+    const sf = schoolForms.find(form => form.pre_order_id === po.id)
+    const formStatusLabel = sf ? (FORM_STATUS[sf.status]?.label || sf.status || '') : 'Form Yok'
+    const statusLabel = STATUS[po.status]?.label || po.status || ''
+    const totalDisplay = fmt(total)
+    const totalRaw = String(total || 0)
+
+    if (filters.id && !normalizeText(po.id).includes(normalizeText(filters.id))) return false
+    if (filters.school && !normalizeText(po.school_name).includes(normalizeText(filters.school))) return false
+    if (filters.season && !normalizeText(po.season).includes(normalizeText(filters.season))) return false
+    if (filters.total && !normalizeText(totalDisplay).includes(normalizeText(filters.total)) && !normalizeText(totalRaw).includes(normalizeText(filters.total))) return false
+    if (filters.formStatus && !normalizeText(formStatusLabel).includes(normalizeText(filters.formStatus))) return false
+    if (filters.status && !normalizeText(statusLabel).includes(normalizeText(filters.status))) return false
+    return true
+  })
+  const openEdit = (po) => {
+    setEditingPreOrder(po)
+    setEditForm({
+      school_name: po.school_name || '',
+      address: po.address || '',
+      season: po.season || '2026-2027',
+      note: po.note || '',
+    })
+    const mappedItems = (po.pre_order_items || []).map(item => ({
+      product_id: String(item.product_id || ''),
+      qty: String(item.qty || ''),
+      unit_price: item.unit_price || 0,
+    }))
+    setEditItems(mappedItems.length > 0 ? mappedItems : [{ ...emptyItem }])
+    setEditModal(true)
+  }
+  const updateEditItem = (idx, field, value) => {
+    setEditItems(prev => {
+      const next = [...prev]
+      next[idx] = { ...next[idx], [field]: value }
+      if (field === 'product_id') next[idx].unit_price = getPrice(parseInt(value))
+      return next
+    })
+  }
+  const addEditItem = () => setEditItems(prev => [...prev, { ...emptyItem }])
+  const removeEditItem = (idx) => setEditItems(prev => {
+    const next = prev.filter((_, i) => i !== idx)
+    return next.length > 0 ? next : [{ ...emptyItem }]
+  })
+  const filledEditItems = editItems.filter(item => item.product_id && parseInt(item.qty) > 0)
+  const editTotal = filledEditItems.reduce((s, i) => s + ((parseInt(i.qty) || 0) * (i.unit_price || 0)), 0)
+  const saveEditedPreOrder = async () => {
+    if (!editingPreOrder) return
+    if (!editForm.school_name || filledEditItems.length === 0) {
+      alert('Kurum adı ve en az bir ürün zorunludur.')
+      return
+    }
+    setEditSaving(true)
+    try {
+      const updated = await updatePreOrder(editingPreOrder.id, {
+        school_name: editForm.school_name,
+        address: editForm.address,
+        season: editForm.season,
+        note: editForm.note,
+      }, filledEditItems)
+      if (!updated) return
+      setEditModal(false)
+      setEditingPreOrder(null)
+      if (detail?.id === editingPreOrder.id) setDetail(null)
+    } finally {
+      setEditSaving(false)
+    }
+  }
+  const handleDelete = async (po) => {
+    const deleted = await deletePreOrder(po)
+    if (deleted && detail?.id === po.id) setDetail(null)
+  }
+  const handleFinalize = async (po) => {
+    const finalized = await finalizePreOrder(po)
+    if (finalized && detail?.id === po.id) setDetail(null)
   }
 
   return (
     <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>On Siparislerim</h2>
+      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Ön Siparişlerim</h2>
       <div style={S.card}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead><tr>
-            <th style={S.th}>No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Toplam</th><th style={S.th}>Durum</th><th style={S.th}></th>
-          </tr></thead>
-          <tbody>{preOrders.length === 0 ? (
-            <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>On siparis yok</td></tr>
-          ) : preOrders.map(po => {
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
+          <thead>
+            <tr>
+              <th style={S.th}>No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Toplam</th><th style={S.th}>Form Durumu</th><th style={S.th}>Durum</th><th style={S.th}></th>
+            </tr>
+            <tr style={{ background: '#faf6ff' }}>
+              <th style={{ ...S.td, padding: 8 }}><input style={{ ...S.input, padding: '6px 8px', fontSize: 12, borderWidth: 1 }} placeholder="Filtre..." value={filters.id} onChange={e => updateFilter('id', e.target.value)} /></th>
+              <th style={{ ...S.td, padding: 8 }}><input style={{ ...S.input, padding: '6px 8px', fontSize: 12, borderWidth: 1 }} placeholder="Filtre..." value={filters.school} onChange={e => updateFilter('school', e.target.value)} /></th>
+              <th style={{ ...S.td, padding: 8 }}><input style={{ ...S.input, padding: '6px 8px', fontSize: 12, borderWidth: 1 }} placeholder="Filtre..." value={filters.season} onChange={e => updateFilter('season', e.target.value)} /></th>
+              <th style={{ ...S.td, padding: 8 }}><input style={{ ...S.input, padding: '6px 8px', fontSize: 12, borderWidth: 1 }} placeholder="Filtre..." value={filters.total} onChange={e => updateFilter('total', e.target.value)} /></th>
+              <th style={{ ...S.td, padding: 8 }}><input style={{ ...S.input, padding: '6px 8px', fontSize: 12, borderWidth: 1 }} placeholder="Filtre..." value={filters.formStatus} onChange={e => updateFilter('formStatus', e.target.value)} /></th>
+              <th style={{ ...S.td, padding: 8 }}><input style={{ ...S.input, padding: '6px 8px', fontSize: 12, borderWidth: 1 }} placeholder="Filtre..." value={filters.status} onChange={e => updateFilter('status', e.target.value)} /></th>
+              <th style={{ ...S.td, padding: 8 }}></th>
+            </tr>
+          </thead>
+          <tbody>{filteredPreOrders.length === 0 ? (
+            <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Kayıt bulunamadı</td></tr>
+          ) : filteredPreOrders.map(po => {
             const items = po.pre_order_items || []
             const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+            const sf = schoolForms.find(form => form.pre_order_id === po.id)
+            const isEditable = po.status === 'on_siparis'
+            const canManageForm = po.status === 'on_siparis' || po.status === 'kesinlesti'
             return (
               <tr key={po.id}>
                 <td style={S.td}><strong style={{ color: COLORS.primary }}>{po.id}</strong></td>
                 <td style={S.td}><strong>{po.school_name}</strong></td>
                 <td style={S.td}>{po.season}</td>
                 <td style={S.td}><strong>{fmt(total)}</strong></td>
-                <td style={S.td}><span style={S.badge(STATUS[po.status]?.color || '#aaa')}>{STATUS[po.status]?.label}</span></td>
                 <td style={S.td}>
-                  <div style={{ display: 'flex', gap: 6 }}>
+                  {sf ? (
+                    <span style={S.badge(FORM_STATUS[sf.status]?.color || '#aaa')}>{FORM_STATUS[sf.status]?.label || sf.status}</span>
+                  ) : (
+                    <span style={S.badge('#aaa')}>Form Yok</span>
+                  )}
+                </td>
+                <td style={S.td}><span style={S.badge(STATUS[po.status]?.color || '#aaa')}>{STATUS[po.status]?.label || po.status}</span></td>
+                <td style={S.td}>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => setDetail(po)}>Detay</button>
-                    {po.status === 'on_siparis' && (
-                      <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => confirmPreOrder(po)}>Kesinlestir</button>
+                    {canManageForm && (
+                      <button style={{ ...S.btn(COLORS.primary), fontSize: 11, padding: '5px 10px' }} onClick={() => createFormLink(po)}>
+                        {sf ? 'Linki Kopyala' : 'Form Linki Oluştur'}
+                      </button>
+                    )}
+                    {isEditable && (
+                      <>
+                        <button style={{ ...S.btn('#4f46e5'), fontSize: 11, padding: '5px 10px' }} onClick={() => openEdit(po)}>Düzenle</button>
+                        <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => handleFinalize(po)}>Kesinleştir</button>
+                        <button style={{ ...S.btn('#ef4444'), fontSize: 11, padding: '5px 10px' }} onClick={() => handleDelete(po)}>Sil</button>
+                      </>
+                    )}
+                    {!isEditable && po.status === 'kesinlesti' && (
+                      <span style={{ ...S.badge('#6b7280'), alignSelf: 'center' }}>Düzenleme Kilitli</span>
+                    )}
+                    {sf && sf.status === 'tamamlandi' && (
+                      <>
+                        <button style={{ ...S.btn(COLORS.yellow), fontSize: 11, padding: '5px 10px' }} onClick={() => setFormDetail(sf)}>Formu Göster</button>
+                        <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => approveForm(sf, po)}>Onayla</button>
+                      </>
+                    )}
+                    {sf && sf.status === 'onaylandi' && (
+                      <>
+                        <button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => setFormDetail(sf)}>Formu Göster</button>
+                        <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => downloadApprovedForm(sf)}>Onaylı Formu İndir</button>
+                      </>
                     )}
                   </div>
                 </td>
@@ -337,23 +631,95 @@ function PreOrders({ preOrders, products, confirmPreOrder }) {
           })}</tbody>
         </table>
       </div>
+      {editModal && (
+        <div style={S.modal} onClick={() => { if (!editSaving) { setEditModal(false); setEditingPreOrder(null) } }}>
+          <div style={{ ...S.modalBox, width: isMobile ? '95vw' : 760, padding: isMobile ? 18 : 28 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
+              <h3 style={{ color: COLORS.primary }}>Ön Sipariş Düzenle</h3>
+              <button style={S.btn('#aaa')} disabled={editSaving} onClick={() => { setEditModal(false); setEditingPreOrder(null) }}>Kapat</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 14 }}>
+              <div>
+                <label style={S.label}>Kurum Adı *</label>
+                <input style={S.input} value={editForm.school_name} onChange={e => setEditForm(prev => ({ ...prev, school_name: e.target.value }))} />
+              </div>
+              <div>
+                <label style={S.label}>Sezon</label>
+                <select style={S.select} value={editForm.season} onChange={e => setEditForm(prev => ({ ...prev, season: e.target.value }))}>
+                  <option>2025-2026</option>
+                  <option>2026-2027</option>
+                </select>
+              </div>
+              <div style={{ gridColumn: isMobile ? 'auto' : '1/-1' }}>
+                <label style={S.label}>Adres</label>
+                <input style={S.input} value={editForm.address} onChange={e => setEditForm(prev => ({ ...prev, address: e.target.value }))} />
+              </div>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 12, minWidth: 680 }}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Ürün</th>
+                  <th style={S.th}>Adet</th>
+                  <th style={S.th}>Birim Fiyat</th>
+                  <th style={S.th}>Toplam</th>
+                  <th style={S.th}></th>
+                </tr>
+              </thead>
+              <tbody>{editItems.map((item, idx) => (
+                <tr key={`edit-item-${idx}`}>
+                  <td style={S.td}>
+                    <select style={S.select} value={item.product_id} onChange={e => updateEditItem(idx, 'product_id', e.target.value)}>
+                      <option value="">Seçiniz...</option>
+                      {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </td>
+                  <td style={S.td}>
+                    <input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={item.qty} onChange={e => updateEditItem(idx, 'qty', e.target.value)} />
+                  </td>
+                  <td style={S.td}><strong>{fmt(item.unit_price)}</strong></td>
+                  <td style={S.td}><strong>{fmt((parseInt(item.qty) || 0) * (item.unit_price || 0))}</strong></td>
+                  <td style={S.td}>
+                    <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeEditItem(idx)} disabled={editSaving}>✕</button>
+                  </td>
+                </tr>
+              ))}</tbody>
+              <tfoot>
+                <tr style={{ background: '#faf6ff' }}>
+                  <td colSpan={3} style={{ ...S.td, textAlign: 'right', fontWeight: 800, color: COLORS.primary }}>GENEL TOPLAM:</td>
+                  <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{fmt(editTotal)}</td>
+                  <td style={S.td}></td>
+                </tr>
+              </tfoot>
+            </table>
+            <div style={{ marginBottom: 14 }}>
+              <button style={{ ...S.btn(COLORS.teal), fontSize: 12 }} onClick={addEditItem} disabled={editSaving}>+ Ürün Ekle</button>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={S.label}>Not</label>
+              <input style={S.input} value={editForm.note} onChange={e => setEditForm(prev => ({ ...prev, note: e.target.value }))} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button style={S.btn('#9ca3af')} onClick={() => { setEditModal(false); setEditingPreOrder(null) }} disabled={editSaving}>Vazgeç</button>
+              <button style={S.btn(COLORS.primary)} onClick={saveEditedPreOrder} disabled={editSaving}>{editSaving ? 'Kaydediliyor...' : 'Kaydet'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
+      {/* Ön sipariş detay */}
       {detail && (
         <div style={S.modal} onClick={() => setDetail(null)}>
-          <div style={{ ...S.modalBox, width: 600 }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ color: COLORS.primary }}>On Siparis Detayi</h3>
+          <div style={{ ...S.modalBox, width: isMobile ? '95vw' : 600, padding: isMobile ? 18 : 28 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
+              <h3 style={{ color: COLORS.primary }}>Ön Sipariş Detayı</h3>
               <button style={S.btn('#aaa')} onClick={() => setDetail(null)}>Kapat</button>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 14 }}>
               <div><span style={{ fontSize: 11, color: '#888' }}>OKUL</span><div style={{ fontWeight: 700 }}>{detail.school_name}</div></div>
               <div><span style={{ fontSize: 11, color: '#888' }}>SEZON</span><div style={{ fontWeight: 700 }}>{detail.season}</div></div>
-              <div><span style={{ fontSize: 11, color: '#888' }}>ADRES</span><div style={{ fontWeight: 700 }}>{detail.address || '-'}</div></div>
             </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr>
-                <th style={S.th}>Urun</th><th style={S.th}>Adet</th><th style={S.th}>Birim Fiyat</th><th style={S.th}>Toplam</th>
-              </tr></thead>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+              <thead><tr><th style={S.th}>Ürün</th><th style={S.th}>Adet</th><th style={S.th}>Birim Fiyat</th><th style={S.th}>Toplam</th></tr></thead>
               <tbody>{(detail.pre_order_items || []).map((item, idx) => (
                 <tr key={idx}>
                   <td style={S.td}>{products.find(p => p.id === item.product_id)?.name || '-'}</td>
@@ -362,18 +728,172 @@ function PreOrders({ preOrders, products, confirmPreOrder }) {
                   <td style={S.td}><strong>{fmt((item.qty || 0) * (item.unit_price || 0))}</strong></td>
                 </tr>
               ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Okul formu detay */}
+      {formDetail && (
+        <div style={S.modal} onClick={() => setFormDetail(null)}>
+          <div style={{ ...S.modalBox, width: isMobile ? '95vw' : 700, padding: isMobile ? 18 : 28 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
+              <h3 style={{ color: COLORS.primary }}>Okul Form Detayı</h3>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {formDetail?.status === 'onaylandi' && <button style={S.btn(COLORS.green)} onClick={() => downloadApprovedForm(formDetail)}>Onaylı Formu İndir</button>}
+                <button style={S.btn('#aaa')} onClick={() => setFormDetail(null)}>Kapat</button>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 14 }}>
+              <div><span style={{ fontSize: 11, color: '#888' }}>KURUM</span><div style={{ fontWeight: 700 }}>{formDetail.school_name}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>VERGİ NO</span><div style={{ fontWeight: 700 }}>{formDetail.tax_no || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>VERGİ DAİRESİ</span><div style={{ fontWeight: 700 }}>{formDetail.tax_office || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>YETKİLİ</span><div style={{ fontWeight: 700 }}>{formDetail.contact_name || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>TELEFON</span><div style={{ fontWeight: 700 }}>{formDetail.contact_phone || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>MAIL</span><div style={{ fontWeight: 700 }}>{formDetail.contact_email || '-'}</div></div>
+              <div style={{ gridColumn: isMobile ? 'auto' : '1/-1' }}><span style={{ fontSize: 11, color: '#888' }}>ADRES</span><div style={{ fontWeight: 700 }}>{formDetail.address || '-'}</div></div>
+            </div>
+            <div style={{ marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>SEVİYE BAZLI ÜRÜN LİSTESİ</div>
+              {Object.keys(formActivitiesByLevel).length > 0 ? (
+                Object.entries(formActivitiesByLevel).map(([level, activities]) => (
+                  <div key={level} style={{ fontWeight: 700, fontSize: 13, color: '#333', marginBottom: 3 }}>
+                    {level}: {activities.join(', ')}
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#333' }}>-</div>
+              )}
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 10 }}>Sınıf Dağılımı</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+              <thead><tr>
+                <th style={S.th}>Sınıf</th><th style={S.th}>Şube</th><th style={S.th}>Öğretmen</th><th style={S.th}>Mail</th><th style={S.th}>Tel</th><th style={S.th}>Adet</th>
+              </tr></thead>
+              <tbody>{formClassRows.map((item, idx) => (
+                <tr key={idx}>
+                  <td style={{ ...S.td, fontWeight: 700, color: COLORS.primary }}>{item.grade}</td>
+                  <td style={S.td}>{item.branch || '-'}</td>
+                  <td style={S.td}>{item.teacher || '-'}</td>
+                  <td style={S.td}>{item.teacher_email || '-'}</td>
+                  <td style={S.td}>{item.teacher_phone || '-'}</td>
+                  <td style={S.td}><strong>{item.qty}</strong></td>
+                </tr>
+              ))}</tbody>
               <tfoot>
                 <tr style={{ background: '#f8f4ff' }}>
-                  <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right' }}>TOPLAM:</td>
-                  <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{fmt((detail.pre_order_items || []).reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0))}</td>
+                  <td colSpan={5} style={{ ...S.td, fontWeight: 800, textAlign: 'right' }}>TOPLAM:</td>
+                  <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{formClassRows.reduce((s, i) => s + (i.qty || 0), 0)}</td>
                 </tr>
               </tfoot>
             </table>
-            {detail.note && <div style={{ marginTop: 12, padding: 12, background: '#f8f4ff', borderRadius: 8, fontSize: 13 }}>Not: {detail.note}</div>}
-            {detail.status === 'on_siparis' && (
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-                <button style={S.btn(COLORS.green)} onClick={() => { confirmPreOrder(detail); setDetail(null) }}>Siparisi Kesinlestir</button>
-              </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Orders({ orders, products, isMobile }) {
+  const [detail, setDetail] = useState(null)
+  const [detailItems, setDetailItems] = useState([])
+  const [detailClassRows, setDetailClassRows] = useState([])
+  const [detailLoading, setDetailLoading] = useState(false)
+  const getProductName = (id) => products.find(p => p.id === id)?.name || `Ürün #${id}`
+  const STATUS_META = {
+    beklemede: { label: 'Beklemede', color: '#f59e0b' },
+    hazirlaniyor: { label: 'Hazırlanıyor', color: '#60CDCB' },
+    yolda: { label: 'Yolda', color: '#8C479C' },
+    teslim_edildi: { label: 'Teslim Edildi', color: '#86B535' },
+    iptal: { label: 'İptal', color: '#ef4444' },
+  }
+
+  const openDetail = async (order) => {
+    setDetail(order)
+    setDetailLoading(true)
+    const [itemsRes, classRes] = await Promise.all([
+      supabase.from('order_items').select('product_id, qty, unit_price, free_qty').eq('order_id', order.id),
+      supabase.from('order_class_items').select('grade, branch, teacher, qty').eq('order_id', order.id),
+    ])
+    setDetailItems(itemsRes.data || [])
+    setDetailClassRows(classRes.data || [])
+    setDetailLoading(false)
+  }
+  return (
+    <div>
+      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Siparişlerim</h2>
+      <div style={S.card}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+          <thead><tr>
+            <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Tutar</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
+          </tr></thead>
+          <tbody>{orders.length === 0 ? (
+            <tr><td colSpan={8} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Henüz sipariş yok</td></tr>
+          ) : orders.map(o => (
+            <tr key={o.id}>
+              <td style={S.td}><strong style={{ color: COLORS.primary }}>{o.id}</strong></td>
+              <td style={S.td}>{o.school_name || '-'}</td>
+              <td style={S.td}>{o.season}</td>
+              <td style={S.td}><strong>{fmt(o.total)}</strong></td>
+              <td style={S.td}><span style={S.badge(STATUS_META[o.status]?.color || '#aaa')}>{STATUS_META[o.status]?.label || (o.status || '-')}</span></td>
+              <td style={S.td}><span style={S.badge(o.invoice_status === 'kesildi' ? COLORS.green : COLORS.orange)}>{o.invoice_status}</span></td>
+              <td style={S.td}><span style={S.badge(o.dia_status ? COLORS.green : '#aaa')}>{o.dia_status ? 'İşlendi' : 'İşlenmedi'}</span></td>
+              <td style={S.td}><button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => openDetail(o)}>Detay</button></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+      {detail && (
+        <div style={S.modal} onClick={() => setDetail(null)}>
+          <div style={{ ...S.modalBox, width: isMobile ? '95vw' : 760, padding: isMobile ? 18 : 28 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
+              <h3 style={{ color: COLORS.primary }}>Sipariş Detayı</h3>
+              <button style={S.btn('#aaa')} onClick={() => setDetail(null)}>Kapat</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 14 }}>
+              <div><span style={{ fontSize: 11, color: '#888' }}>SİPARİŞ NO</span><div style={{ fontWeight: 700 }}>{detail.id}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>OKUL</span><div style={{ fontWeight: 700 }}>{detail.school_name || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>SEZON</span><div style={{ fontWeight: 700 }}>{detail.season || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>DURUM</span><div style={{ fontWeight: 700 }}>{STATUS_META[detail.status]?.label || detail.status || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>FATURA</span><div style={{ fontWeight: 700 }}>{detail.invoice_status || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>SEVK TARİHİ</span><div style={{ fontWeight: 700 }}>{detail.cargo_date ? new Date(detail.cargo_date).toLocaleDateString('tr-TR') : '-'}</div></div>
+            </div>
+            {detailLoading ? (
+              <div style={{ fontSize: 13, color: '#888' }}>Yükleniyor...</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 10 }}>Sipariş Kalemleri</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 14, minWidth: 700 }}>
+                  <thead><tr><th style={S.th}>Ürün</th><th style={S.th}>Adet</th><th style={S.th}>Birim Fiyat</th><th style={S.th}>Ücretsiz</th><th style={S.th}>Toplam</th></tr></thead>
+                  <tbody>{detailItems.length === 0 ? (
+                    <tr><td colSpan={5} style={{ ...S.td, textAlign: 'center', color: '#aaa' }}>Kalem bulunamadı</td></tr>
+                  ) : detailItems.map((item, idx) => (
+                    <tr key={`${item.product_id}-${idx}`}>
+                      <td style={S.td}>{getProductName(item.product_id)}</td>
+                      <td style={S.td}>{item.qty || 0}</td>
+                      <td style={S.td}>{fmt(item.unit_price || 0)}</td>
+                      <td style={S.td}>{item.free_qty || 0}</td>
+                      <td style={S.td}><strong>{fmt((item.qty || 0) * (item.unit_price || 0))}</strong></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+                {detailClassRows.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 10 }}>Sınıf Dağılımı</div>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+                      <thead><tr><th style={S.th}>Sınıf</th><th style={S.th}>Şube</th><th style={S.th}>Öğretmen</th><th style={S.th}>Adet</th></tr></thead>
+                      <tbody>{detailClassRows.map((row, idx) => (
+                        <tr key={`${row.grade}-${idx}`}>
+                          <td style={S.td}>{row.grade || '-'}</td>
+                          <td style={S.td}>{row.branch || '-'}</td>
+                          <td style={S.td}>{row.teacher || '-'}</td>
+                          <td style={S.td}><strong>{row.qty || 0}</strong></td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -382,75 +902,28 @@ function PreOrders({ preOrders, products, confirmPreOrder }) {
   )
 }
 
-function Orders({ orders }) {
-  return (
-    <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Siparislerim</h2>
-      <div style={S.card}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead><tr>
-            <th style={S.th}>Siparis No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Tutar</th><th style={S.th}>Sevk</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th>
-          </tr></thead>
-          <tbody>{orders.length === 0 ? (
-            <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Henuz siparis yok</td></tr>
-          ) : orders.map(o => (
-            <tr key={o.id}>
-              <td style={S.td}><strong style={{ color: COLORS.primary }}>{o.id}</strong></td>
-              <td style={S.td}>{o.school_name || '-'}</td>
-              <td style={S.td}>{o.season}</td>
-              <td style={S.td}><strong>{fmt(o.total)}</strong></td>
-              <td style={S.td}>{o.cargo_date ? new Date(o.cargo_date).toLocaleDateString('tr-TR') : '-'}</td>
-              <td style={S.td}><span style={S.badge(o.invoice_status === 'kesildi' ? COLORS.green : COLORS.orange)}>{o.invoice_status}</span></td>
-              <td style={S.td}><span style={S.badge(o.dia_status ? COLORS.green : '#aaa')}>{o.dia_status ? 'Islendi' : 'Islenmedi'}</span></td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-function PaymentsView({ payments, checks }) {
-  const CHECK_STATUS = {
-    musteride: { label: 'Musteride', color: '#f59e0b' },
-    portfolyde: { label: 'Portfolyde', color: '#60CDCB' },
-    tedarikcide: { label: 'Tedarikcide', color: '#8C479C' },
-    tahsil_edildi: { label: 'Tahsil Edildi', color: '#86B535' }
-  }
+function PaymentsView({ payments, checks, isMobile }) {
+  const CHECK_STATUS = { musteride: { label: 'Müşteride', color: '#f59e0b' }, portfolyde: { label: 'Portföyde', color: '#60CDCB' }, tedarikcide: { label: 'Tedarikçide', color: '#8C479C' }, tahsil_edildi: { label: 'Tahsil Edildi', color: '#86B535' } }
   const cashPayments = payments.filter(p => p.method !== 'cek')
 
   return (
     <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Odemelerim</h2>
+      <h2 style={{ color: COLORS.primary, marginBottom: isMobile ? 16 : 20 }}>Ödemelerim</h2>
       <div style={S.card}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary, marginBottom: 12 }}>Nakit / Havale Odemeler</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead><tr><th style={S.th}>Tarih</th><th style={S.th}>Yontem</th><th style={S.th}>Tutar</th><th style={S.th}>Not</th></tr></thead>
-          <tbody>{cashPayments.length === 0 ? (
-            <tr><td colSpan={4} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 24 }}>Kayit yok</td></tr>
-          ) : cashPayments.map(p => (
-            <tr key={p.id}>
-              <td style={S.td}>{new Date(p.date).toLocaleDateString('tr-TR')}</td>
-              <td style={S.td}><span style={S.badge(COLORS.teal)}>{p.method}</span></td>
-              <td style={S.td}><strong style={{ color: COLORS.green }}>{fmt(p.amount)}</strong></td>
-              <td style={S.td}>{p.note || '-'}</td>
-            </tr>
+        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary, marginBottom: 12 }}>Nakit / Havale</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
+          <thead><tr><th style={S.th}>Tarih</th><th style={S.th}>Yöntem</th><th style={S.th}>Tutar</th><th style={S.th}>Not</th></tr></thead>
+          <tbody>{cashPayments.length === 0 ? <tr><td colSpan={4} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 24 }}>Kayıt yok</td></tr> : cashPayments.map(p => (
+            <tr key={p.id}><td style={S.td}>{new Date(p.date).toLocaleDateString('tr-TR')}</td><td style={S.td}><span style={S.badge(COLORS.teal)}>{p.method}</span></td><td style={S.td}><strong style={{ color: COLORS.green }}>{fmt(p.amount)}</strong></td><td style={S.td}>{p.note || '-'}</td></tr>
           ))}</tbody>
         </table>
       </div>
       <div style={S.card}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary, marginBottom: 12 }}>Cek Odemeler</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary, marginBottom: 12 }}>Çekler</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
           <thead><tr><th style={S.th}>Vade</th><th style={S.th}>Tutar</th><th style={S.th}>Banka</th><th style={S.th}>Durum</th></tr></thead>
-          <tbody>{checks.length === 0 ? (
-            <tr><td colSpan={4} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 24 }}>Kayit yok</td></tr>
-          ) : checks.map(c => (
-            <tr key={c.id}>
-              <td style={S.td}>{new Date(c.due_date).toLocaleDateString('tr-TR')}</td>
-              <td style={S.td}><strong style={{ color: COLORS.green }}>{fmt(c.amount)}</strong></td>
-              <td style={S.td}>{c.bank || '-'}</td>
-              <td style={S.td}><span style={S.badge(CHECK_STATUS[c.status]?.color || '#aaa')}>{CHECK_STATUS[c.status]?.label || c.status}</span></td>
-            </tr>
+          <tbody>{checks.length === 0 ? <tr><td colSpan={4} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 24 }}>Kayıt yok</td></tr> : checks.map(c => (
+            <tr key={c.id}><td style={S.td}>{new Date(c.due_date).toLocaleDateString('tr-TR')}</td><td style={S.td}><strong style={{ color: COLORS.green }}>{fmt(c.amount)}</strong></td><td style={S.td}>{c.bank || '-'}</td><td style={S.td}><span style={S.badge(CHECK_STATUS[c.status]?.color || '#aaa')}>{CHECK_STATUS[c.status]?.label || c.status}</span></td></tr>
           ))}</tbody>
         </table>
       </div>
@@ -458,30 +931,17 @@ function PaymentsView({ payments, checks }) {
   )
 }
 
-function ChecksView({ checks }) {
-  const CHECK_STATUS = {
-    musteride: { label: 'Musteride', color: '#f59e0b' },
-    portfolyde: { label: 'Portfolyde', color: '#60CDCB' },
-    tedarikcide: { label: 'Tedarikcide', color: '#8C479C' },
-    tahsil_edildi: { label: 'Tahsil Edildi', color: '#86B535' }
-  }
+function ChecksView({ checks, isMobile }) {
+  const CHECK_STATUS = { musteride: { label: 'Müşteride', color: '#f59e0b' }, portfolyde: { label: 'Portföyde', color: '#60CDCB' }, tedarikcide: { label: 'Tedarikçide', color: '#8C479C' }, tahsil_edildi: { label: 'Tahsil Edildi', color: '#86B535' } }
 
   return (
     <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Ceklerim</h2>
+      <h2 style={{ color: COLORS.primary, marginBottom: isMobile ? 16 : 20 }}>Çeklerim</h2>
       <div style={S.card}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
           <thead><tr><th style={S.th}>Vade</th><th style={S.th}>Tutar</th><th style={S.th}>Banka</th><th style={S.th}>Durum</th><th style={S.th}>Not</th></tr></thead>
-          <tbody>{checks.length === 0 ? (
-            <tr><td colSpan={5} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Cek kaydi yok</td></tr>
-          ) : checks.map(c => (
-            <tr key={c.id}>
-              <td style={S.td}><strong>{new Date(c.due_date).toLocaleDateString('tr-TR')}</strong></td>
-              <td style={S.td}><strong style={{ color: COLORS.green }}>{fmt(c.amount)}</strong></td>
-              <td style={S.td}>{c.bank || '-'}</td>
-              <td style={S.td}><span style={S.badge(CHECK_STATUS[c.status]?.color || '#aaa')}>{CHECK_STATUS[c.status]?.label || c.status}</span></td>
-              <td style={S.td}>{c.note || '-'}</td>
-            </tr>
+          <tbody>{checks.length === 0 ? <tr><td colSpan={5} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Çek kaydı yok</td></tr> : checks.map(c => (
+            <tr key={c.id}><td style={S.td}><strong>{new Date(c.due_date).toLocaleDateString('tr-TR')}</strong></td><td style={S.td}><strong style={{ color: COLORS.green }}>{fmt(c.amount)}</strong></td><td style={S.td}>{c.bank || '-'}</td><td style={S.td}><span style={S.badge(CHECK_STATUS[c.status]?.color || '#aaa')}>{CHECK_STATUS[c.status]?.label || c.status}</span></td><td style={S.td}>{c.note || '-'}</td></tr>
           ))}</tbody>
         </table>
       </div>
