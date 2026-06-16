@@ -13,6 +13,9 @@ const COLORS = {
 
 const fmt = (n) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(n || 0)
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('tr-TR') : '-'
+const VAT_RATE = 0.2
+const getVatAmount = (amount) => (amount || 0) * VAT_RATE
+const getAmountWithVat = (amount) => (amount || 0) + getVatAmount(amount)
 
 const S = {
   header: { background: COLORS.primary, padding: '16px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
@@ -113,6 +116,7 @@ export default function DealerPortal({ dealer, onLogout }) {
       const link = BASE_URL + '/form/' + existing.token
       navigator.clipboard.writeText(link).catch(() => {})
       alert('Link kopyalandı!\n\n' + link)
+      window.open(link, '_blank', 'noopener,noreferrer')
       return
     }
     const token = Math.random().toString(36).substring(2) + Date.now().toString(36)
@@ -123,6 +127,7 @@ export default function DealerPortal({ dealer, onLogout }) {
     const link = BASE_URL + '/form/' + token
     navigator.clipboard.writeText(link).catch(() => {})
     alert('Link oluşturuldu ve kopyalandı!\n\n' + link)
+    window.open(link, '_blank', 'noopener,noreferrer')
     loadAll()
   }
   const updatePreOrder = async (preOrderId, preOrderPayload, itemsPayload) => {
@@ -352,6 +357,8 @@ function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
   const addItem = () => setItems(prev => [...prev, { product_id: '', qty: '', unit_price: 0 }])
   const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx))
   const total = items.reduce((s, i) => s + ((parseInt(i.qty) || 0) * (i.unit_price || 0)), 0)
+  const totalVat = getVatAmount(total)
+  const totalWithVat = getAmountWithVat(total)
   const filledItems = items.filter(i => i.product_id && parseInt(i.qty) > 0)
 
   const save = async () => {
@@ -413,6 +420,11 @@ function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
         </table>
         <div style={{ marginTop: 12 }}>
           <button style={{ ...S.btn(COLORS.teal), fontSize: 12 }} onClick={addItem}>+ Ürün Ekle</button>
+        </div>
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: '#f8f4ff', display: 'grid', gap: 6 }}>
+          <div style={{ fontSize: 12, color: '#666' }}>KDV Hariç Toplam: <strong style={{ color: COLORS.primary }}>{fmt(total)}</strong></div>
+          <div style={{ fontSize: 12, color: '#666' }}>KDV (%20): <strong style={{ color: COLORS.orange }}>{fmt(totalVat)}</strong></div>
+          <div style={{ fontSize: 13, color: '#333', fontWeight: 800 }}>KDV Dahil Toplam: <span style={{ color: COLORS.green }}>{fmt(totalWithVat)}</span></div>
         </div>
       </div>
       <div style={S.card}>
@@ -491,6 +503,12 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     if (filters.status && !normalizeText(statusLabel).includes(normalizeText(filters.status))) return false
     return true
   })
+  const filteredTotal = filteredPreOrders.reduce((sum, po) => {
+    const items = po.pre_order_items || []
+    return sum + items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+  }, 0)
+  const filteredTotalVat = getVatAmount(filteredTotal)
+  const filteredTotalWithVat = getAmountWithVat(filteredTotal)
   const openEdit = (po) => {
     setEditingPreOrder(po)
     setEditForm({
@@ -629,6 +647,13 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               </tr>
             )
           })}</tbody>
+          <tfoot>
+            <tr style={{ background: '#f8f4ff' }}>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.primary }}>TOPLAM (KDV Hariç):</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}><strong>{fmt(filteredTotal)}</strong></td>
+              <td colSpan={3} style={S.td}></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
       {editModal && (
