@@ -18,6 +18,7 @@ const parseBody = (req) => {
 
 
 const hasActiveSuperUser = (accounts = []) => accounts.some(account => account.is_active && account.is_superuser)
+const normalizeAdminRole = (value) => String(value || '').trim().toLowerCase() === 'muhasebe' ? 'muhasebe' : 'admin'
 
 const sortAccounts = (accounts = []) => {
   return [...accounts].sort((a, b) => {
@@ -72,10 +73,12 @@ module.exports = async (req, res) => {
         name,
         email,
         password_hash: isHashedPassword(rawPassword) ? rawPassword : hashDealerPassword(username, rawPassword),
+        role: normalizeAdminRole(body.role),
         is_superuser: Boolean(body.is_superuser),
         is_active: true,
       }
       if (username === defaultAdminUsername) {
+        nextAccount.role = 'admin'
         nextAccount.is_superuser = true
         nextAccount.is_active = true
       }
@@ -111,10 +114,13 @@ module.exports = async (req, res) => {
     if (nextAccount.password_hash && !isHashedPassword(nextAccount.password_hash)) {
       nextAccount.password_hash = hashDealerPassword(username, nextAccount.password_hash)
     }
+    if (body.role !== undefined) nextAccount.role = normalizeAdminRole(body.role)
     if (body.is_superuser !== undefined) nextAccount.is_superuser = Boolean(body.is_superuser)
     if (body.is_active !== undefined) nextAccount.is_active = Boolean(body.is_active)
+    if (nextAccount.is_superuser) nextAccount.role = 'admin'
 
     if (username === defaultAdminUsername) {
+      nextAccount.role = 'admin'
       nextAccount.is_superuser = true
       nextAccount.is_active = true
     }

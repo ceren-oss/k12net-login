@@ -31,6 +31,7 @@ module.exports = async (req, res) => {
       admin: {
         username: authSession.admin?.username || 'admin',
         name: authSession.admin?.name || authSession.admin?.username || 'Admin',
+        role: authSession.admin?.role || 'admin',
         is_superuser: Boolean(authSession.admin?.is_superuser),
       }
     })

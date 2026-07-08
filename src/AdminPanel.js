@@ -16,6 +16,25 @@ const fmtDate = (d) => d ? new Date(d).toLocaleDateString('tr-TR') : '-'
 const fmtDateTime = (d) => d ? new Date(d).toLocaleString('tr-TR') : '-'
 
 const GRADES = ['4 Yaş', '5-6 Yaş', '1. Sınıf', '2. Sınıf', '3. Sınıf', '4. Sınıf', '5. Sınıf', '6. Sınıf', '7. Sınıf', '8. Sınıf']
+const ADMIN_GUIDE_DISMISS_KEY = 'kk_admin_guide_dismissed'
+const ACCOUNTING_ALLOWED_NAV_IDS = ['dashboard', 'payments', 'checks']
+const toFilterText = (value) => String(value || '').toLocaleLowerCase('tr-TR')
+const parseMoney = (value) => parseFloat(value) || 0
+const escapeCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
+const downloadCsvReport = (filename, headers, rows) => {
+  const csvText = [headers, ...rows]
+    .map(row => row.map(escapeCsvCell).join(';'))
+    .join('\n')
+  const blob = new Blob([`\uFEFF${csvText}`], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
 
 const S = {
   sidebar: { width: 220, minHeight: '100vh', background: COLORS.primary, display: 'flex', flexDirection: 'column', position: 'fixed', top: 0, left: 0, zIndex: 100 },
@@ -135,7 +154,7 @@ function AdminTeam({ adminUser, isMobile }) {
   const [saving, setSaving] = useState(false)
   const [editingUsername, setEditingUsername] = useState('')
   const [formError, setFormError] = useState('')
-  const [form, setForm] = useState({ username: '', name: '', email: '', password: '', is_superuser: false, is_active: true })
+  const [form, setForm] = useState({ username: '', name: '', email: '', password: '', role: 'admin', is_superuser: false, is_active: true })
 
   const loadUsers = async () => {
     setLoading(true)
@@ -156,7 +175,7 @@ function AdminTeam({ adminUser, isMobile }) {
 
   const openNew = () => {
     setEditingUsername('')
-    setForm({ username: '', name: '', email: '', password: '', is_superuser: false, is_active: true })
+    setForm({ username: '', name: '', email: '', password: '', role: 'admin', is_superuser: false, is_active: true })
     setFormError('')
     setModal(true)
   }
@@ -168,6 +187,7 @@ function AdminTeam({ adminUser, isMobile }) {
       name: user.name || user.username,
       email: user.email || '',
       password: '',
+      role: user.role === 'muhasebe' ? 'muhasebe' : 'admin',
       is_superuser: Boolean(user.is_superuser),
       is_active: user.is_active !== false,
     })
@@ -187,6 +207,7 @@ function AdminTeam({ adminUser, isMobile }) {
       username,
       name,
       email: String(form.email || '').trim().toLowerCase(),
+      role: isPrimaryAdmin ? 'admin' : (form.role === 'muhasebe' ? 'muhasebe' : 'admin'),
       is_superuser: isPrimaryAdmin ? true : Boolean(form.is_superuser),
       is_active: isPrimaryAdmin ? true : Boolean(form.is_active),
     }
@@ -256,7 +277,7 @@ function AdminTeam({ adminUser, isMobile }) {
               <td style={S.td}><strong>{user.username}</strong></td>
               <td style={S.td}>{user.name || '-'}</td>
               <td style={S.td}>{user.email || '-'}</td>
-              <td style={S.td}><span style={S.badge(user.is_superuser ? COLORS.primary : COLORS.teal)}>{user.is_superuser ? 'Superuser' : 'Admin'}</span></td>
+              <td style={S.td}><span style={S.badge(user.is_superuser ? COLORS.primary : (user.role === 'muhasebe' ? COLORS.orange : COLORS.teal))}>{user.is_superuser ? 'Superuser' : (user.role === 'muhasebe' ? 'Muhasebe' : 'Admin')}</span></td>
               <td style={S.td}><span style={S.badge(user.is_active !== false ? COLORS.green : '#999')}>{user.is_active !== false ? 'Aktif' : 'Pasif'}</span></td>
               <td style={S.td}>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -300,13 +321,25 @@ function AdminTeam({ adminUser, isMobile }) {
                 <label style={S.label}>{editingUsername ? 'Yeni Şifre (opsiyonel)' : 'Şifre'}</label>
                 <input type="password" style={S.input} value={form.password} onChange={e => setForm(prev => ({ ...prev, password: e.target.value }))} placeholder="••••••••" />
               </div>
+              <div>
+                <label style={S.label}>Rol</label>
+                <select
+                  style={S.select}
+                  value={form.role}
+                  disabled={normalizeUsername(form.username) === 'admin' || form.is_superuser}
+                  onChange={e => setForm(prev => ({ ...prev, role: e.target.value === 'muhasebe' ? 'muhasebe' : 'admin' }))}
+                >
+                  <option value="admin">Admin</option>
+                  <option value="muhasebe">Muhasebe</option>
+                </select>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 24 }}>
                 <input
                   type="checkbox"
                   id="admin_superuser_flag"
                   checked={normalizeUsername(form.username) === 'admin' ? true : form.is_superuser}
                   disabled={normalizeUsername(form.username) === 'admin'}
-                  onChange={e => setForm(prev => ({ ...prev, is_superuser: e.target.checked }))}
+                  onChange={e => setForm(prev => ({ ...prev, is_superuser: e.target.checked, role: e.target.checked ? 'admin' : prev.role }))}
                 />
                 <label htmlFor="admin_superuser_flag" style={{ fontSize: 13, fontWeight: 600 }}>Superuser yetkisi ver</label>
               </div>
@@ -324,7 +357,13 @@ function AdminTeam({ adminUser, isMobile }) {
 }
 export default function AdminPanel({ adminUser, onLogout }) {
   const [page, setPage] = useState('dashboard')
-  const [showGuide, setShowGuide] = useState(true)
+  const [showGuide, setShowGuide] = useState(() => {
+    try {
+      return localStorage.getItem(ADMIN_GUIDE_DISMISS_KEY) !== '1'
+    } catch {
+      return true
+    }
+  })
   const [dealers, setDealers] = useState([])
   const [orders, setOrders] = useState([])
   const [preOrders, setPreOrders] = useState([])
@@ -338,14 +377,20 @@ export default function AdminPanel({ adminUser, onLogout }) {
   const [passwordError, setPasswordError] = useState('')
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', new_password_again: '' })
   const isSuperUser = Boolean(adminUser?.is_superuser)
+  const adminRole = adminUser?.role === 'muhasebe' ? 'muhasebe' : 'admin'
+  const isAccountingAdmin = !isSuperUser && adminRole === 'muhasebe'
   const isMobile = useIsMobile(960)
 
   useEffect(() => { loadAll() }, [isSuperUser])
   useEffect(() => {
-    if (!isSuperUser && (page === 'audit' || page === 'team')) {
+    if (isAccountingAdmin && !ACCOUNTING_ALLOWED_NAV_IDS.includes(page)) {
+      setPage('dashboard')
+      return
+    }
+    if (!isSuperUser && !isAccountingAdmin && (page === 'audit' || page === 'team')) {
       setPage('dashboard')
     }
-  }, [isSuperUser, page])
+  }, [isSuperUser, isAccountingAdmin, page])
 
   const loadAuditLogs = async (limit = 25) => {
     if (!isSuperUser) {
@@ -397,12 +442,20 @@ export default function AdminPanel({ adminUser, onLogout }) {
   }
 
   const getDealerName = (id) => dealers.find(d => d.id === id)?.name || '-'
-  const visibleNav = isSuperUser ? NAV : NAV.filter(n => n.id !== 'audit' && n.id !== 'team')
-  const props = { dealers, orders, preOrders, payments, checks, products, loadAll, getDealerName, adminUser, logAdminAction, auditLogs, loadAuditLogs, auditLoading, isSuperUser, isMobile }
+  const visibleNav = isSuperUser
+    ? NAV
+    : (isAccountingAdmin ? NAV.filter(n => ACCOUNTING_ALLOWED_NAV_IDS.includes(n.id)) : NAV.filter(n => n.id !== 'audit' && n.id !== 'team'))
+  const props = { dealers, orders, preOrders, payments, checks, products, loadAll, getDealerName, adminUser, logAdminAction, auditLogs, loadAuditLogs, auditLoading, isSuperUser, isAccountingAdmin, adminRole, isMobile }
   const openPasswordModal = () => {
     setPasswordError('')
     setPasswordForm({ current_password: '', new_password: '', new_password_again: '' })
     setPasswordModal(true)
+  }
+  const closeGuide = () => {
+    setShowGuide(false)
+    try {
+      localStorage.setItem(ADMIN_GUIDE_DISMISS_KEY, '1')
+    } catch {}
   }
 
   const saveOwnPassword = async () => {
@@ -511,12 +564,12 @@ export default function AdminPanel({ adminUser, onLogout }) {
           </div>
         </div>
       )}
-      <RoleGuideModal role="admin" open={showGuide} onClose={() => setShowGuide(false)} />
+      <RoleGuideModal role="admin" open={showGuide} onClose={closeGuide} />
     </div>
   )
 }
 
-function Dashboard({ dealers, orders, payments, checks, preOrders, auditLogs, isSuperUser, isMobile }) {
+function Dashboard({ dealers, orders, payments, checks, preOrders, isMobile }) {
   const totalOrders = orders.reduce((s, o) => s + (o.total || 0), 0)
   const totalPayments = payments.reduce((s, p) => s + (p.amount || 0), 0)
   const pendingChecks = checks.filter(c => c.status !== 'tahsil_edildi').reduce((s, c) => s + (c.amount || 0), 0)
@@ -568,22 +621,6 @@ function Dashboard({ dealers, orders, payments, checks, preOrders, auditLogs, is
           </table>
         </div>
       </div>
-      {isSuperUser && (
-        <div style={{ ...S.card, marginTop: 16 }}>
-          <h3 style={{ color: COLORS.primary, marginBottom: 16, fontSize: 15 }}>Son Admin İşlemleri</h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
-            <thead><tr><th style={S.th}>Tarih</th><th style={S.th}>Yapan</th><th style={S.th}>İşlem</th><th style={S.th}>Hedef</th></tr></thead>
-            <tbody>{(auditLogs || []).slice(0, 6).map((log, idx) => (
-              <tr key={log.id || `${log.created_at || ''}-${idx}`}>
-                <td style={S.td}>{fmtDate(log.created_at)}</td>
-                <td style={S.td}>{log.admin_name || log.admin_username || '-'}</td>
-                <td style={S.td}>{log.action || '-'}</td>
-                <td style={S.td}>{log.target || '-'}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      )}
     </div>
   )
 }
@@ -1099,11 +1136,49 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
 function Payments({ dealers, payments, loadAll, logAdminAction, isMobile }) {
   const [modal, setModal] = useState(false)
   const [form, setForm] = useState({ dealer_id: '', amount: '', method: 'havale', commission_rate: '', note: '' })
+  const [filters, setFilters] = useState({ dealer_id: '', method: '', min_amount: '', max_amount: '', start_date: '', end_date: '', query: '' })
 
   const totalAmount = () => {
-    const base = parseFloat(form.amount) || 0
-    if (form.method === 'kredi_karti' && form.commission_rate) return base + (base * parseFloat(form.commission_rate) / 100)
+    const base = parseMoney(form.amount)
+    if (form.method === 'kredi_karti' && form.commission_rate) return base + (base * parseMoney(form.commission_rate) / 100)
     return base
+  }
+  const updateFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }))
+  const clearFilters = () => setFilters({ dealer_id: '', method: '', min_amount: '', max_amount: '', start_date: '', end_date: '', query: '' })
+  const filteredPayments = payments.filter(payment => {
+    if (filters.dealer_id && payment.dealer_id !== filters.dealer_id) return false
+    if (filters.method && payment.method !== filters.method) return false
+    const amount = parseMoney(payment.amount)
+    if (filters.min_amount && amount < parseMoney(filters.min_amount)) return false
+    if (filters.max_amount && amount > parseMoney(filters.max_amount)) return false
+
+    const paymentDateValue = payment.date || payment.created_at
+    if (filters.start_date && paymentDateValue && new Date(paymentDateValue) < new Date(filters.start_date)) return false
+    if (filters.end_date && paymentDateValue) {
+      const endDate = new Date(filters.end_date)
+      endDate.setHours(23, 59, 59, 999)
+      if (new Date(paymentDateValue) > endDate) return false
+    }
+
+    if (filters.query) {
+      const dealerName = dealers.find(d => d.id === payment.dealer_id)?.name || ''
+      const haystack = [payment.id, dealerName, payment.method, payment.note].map(toFilterText).join(' ')
+      if (!haystack.includes(toFilterText(filters.query))) return false
+    }
+    return true
+  })
+  const filteredTotal = filteredPayments.reduce((sum, payment) => sum + parseMoney(payment.amount), 0)
+  const exportReport = () => {
+    const datePart = new Date().toISOString().slice(0, 10)
+    const rows = filteredPayments.map(payment => [
+      payment.id || '-',
+      dealers.find(d => d.id === payment.dealer_id)?.name || '-',
+      fmtDate(payment.date || payment.created_at),
+      payment.method || '-',
+      parseMoney(payment.amount),
+      payment.note || '-',
+    ])
+    downloadCsvReport(`odemeler-raporu-${datePart}.csv`, ['No', 'Bayi', 'Tarih', 'Yöntem', 'Tutar', 'Not'], rows)
   }
 
   const save = async () => {
@@ -1127,16 +1202,66 @@ function Payments({ dealers, payments, loadAll, logAdminAction, isMobile }) {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
         <h2 style={{ color: COLORS.primary }}>Ödemeler</h2>
-        <button style={S.btn()} onClick={() => setModal(true)}>+ Ödeme Ekle</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button style={S.btn(COLORS.teal)} onClick={exportReport}>Rapor İndir</button>
+          <button style={S.btn()} onClick={() => setModal(true)}>+ Ödeme Ekle</button>
+        </div>
+      </div>
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, minmax(160px, 1fr))', gap: 10 }}>
+          <div>
+            <label style={S.label}>Bayi</label>
+            <select style={S.select} value={filters.dealer_id} onChange={e => updateFilter('dealer_id', e.target.value)}>
+              <option value="">Tümü</option>
+              {dealers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Yöntem</label>
+            <select style={S.select} value={filters.method} onChange={e => updateFilter('method', e.target.value)}>
+              <option value="">Tümü</option>
+              <option value="havale">Havale/EFT</option>
+              <option value="nakit">Nakit</option>
+              <option value="kredi_karti">Kredi Kartı</option>
+              <option value="cek">Çek</option>
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Tarih (Başlangıç)</label>
+            <input type="date" style={S.input} value={filters.start_date} onChange={e => updateFilter('start_date', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Tarih (Bitiş)</label>
+            <input type="date" style={S.input} value={filters.end_date} onChange={e => updateFilter('end_date', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Min Tutar</label>
+            <input type="number" style={S.input} value={filters.min_amount} onChange={e => updateFilter('min_amount', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Max Tutar</label>
+            <input type="number" style={S.input} value={filters.max_amount} onChange={e => updateFilter('max_amount', e.target.value)} />
+          </div>
+          <div style={{ gridColumn: isMobile ? 'auto' : 'span 2' }}>
+            <label style={S.label}>Arama</label>
+            <input style={S.input} value={filters.query} onChange={e => updateFilter('query', e.target.value)} placeholder="No, bayi, not..." />
+          </div>
+        </div>
+        <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#666' }}>Filtreli kayıt: <strong>{filteredPayments.length}</strong> • Toplam: <strong>{fmt(filteredTotal)}</strong></span>
+          <button style={{ ...S.btn('#9ca3af'), padding: '6px 12px', fontSize: 12 }} onClick={clearFilters}>Filtreleri Temizle</button>
+        </div>
       </div>
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
           <thead><tr><th style={S.th}>No</th><th style={S.th}>Bayi</th><th style={S.th}>Tarih</th><th style={S.th}>Yöntem</th><th style={S.th}>Tutar</th><th style={S.th}>Not</th></tr></thead>
-          <tbody>{payments.map(p => (
+          <tbody>{filteredPayments.length === 0 ? (
+            <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#888', padding: 24 }}>Filtreye uygun kayıt bulunamadı.</td></tr>
+          ) : filteredPayments.map(p => (
             <tr key={p.id}>
               <td style={S.td}><strong style={{ color: COLORS.green }}>{p.id}</strong></td>
               <td style={S.td}>{dealers.find(d => d.id === p.dealer_id)?.name || '-'}</td>
-              <td style={S.td}>{fmtDate(p.date)}</td>
+              <td style={S.td}>{fmtDate(p.date || p.created_at)}</td>
               <td style={S.td}><span style={S.badge(COLORS.teal)}>{p.method}</span></td>
               <td style={S.td}><strong style={{ color: COLORS.green }}>{fmt(p.amount)}</strong></td>
               <td style={S.td}>{p.note || '-'}</td>
@@ -1175,17 +1300,53 @@ function Payments({ dealers, payments, loadAll, logAdminAction, isMobile }) {
 function Checks({ dealers, checks, loadAll, logAdminAction, isMobile }) {
   const [modal, setModal] = useState(false)
   const [form, setForm] = useState({ dealer_id: '', amount: '', due_date: '', status: 'musteride', bank: '', note: '' })
+  const [filters, setFilters] = useState({ dealer_id: '', status: '', min_amount: '', max_amount: '', start_date: '', end_date: '', query: '' })
   const STATUS = { musteride: { label: 'Müşteride', color: COLORS.orange }, portfolyde: { label: 'Portföyde', color: COLORS.teal }, tedarikcide: { label: 'Tedarikçide', color: COLORS.primary }, tahsil_edildi: { label: 'Tahsil Edildi', color: COLORS.green } }
+  const updateFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }))
+  const clearFilters = () => setFilters({ dealer_id: '', status: '', min_amount: '', max_amount: '', start_date: '', end_date: '', query: '' })
+  const filteredChecks = checks.filter(check => {
+    if (filters.dealer_id && check.dealer_id !== filters.dealer_id) return false
+    if (filters.status && check.status !== filters.status) return false
+    const amount = parseMoney(check.amount)
+    if (filters.min_amount && amount < parseMoney(filters.min_amount)) return false
+    if (filters.max_amount && amount > parseMoney(filters.max_amount)) return false
+    if (filters.start_date && check.due_date && new Date(check.due_date) < new Date(filters.start_date)) return false
+    if (filters.end_date && check.due_date) {
+      const endDate = new Date(filters.end_date)
+      endDate.setHours(23, 59, 59, 999)
+      if (new Date(check.due_date) > endDate) return false
+    }
+    if (filters.query) {
+      const dealerName = dealers.find(d => d.id === check.dealer_id)?.name || ''
+      const haystack = [check.id, dealerName, check.bank, check.note].map(toFilterText).join(' ')
+      if (!haystack.includes(toFilterText(filters.query))) return false
+    }
+    return true
+  })
+  const filteredTotal = filteredChecks.reduce((sum, check) => sum + parseMoney(check.amount), 0)
+  const exportReport = () => {
+    const datePart = new Date().toISOString().slice(0, 10)
+    const rows = filteredChecks.map(check => [
+      check.id || '-',
+      dealers.find(d => d.id === check.dealer_id)?.name || '-',
+      fmtDate(check.due_date),
+      parseMoney(check.amount),
+      check.bank || '-',
+      STATUS[check.status]?.label || check.status || '-',
+      check.note || '-',
+    ])
+    downloadCsvReport(`cekler-raporu-${datePart}.csv`, ['No', 'Bayi', 'Vade', 'Tutar', 'Banka', 'Durum', 'Not'], rows)
+  }
 
   const save = async () => {
     if (!form.dealer_id || !form.amount || !form.due_date) return
-    await supabase.from('checks').insert([{ ...form, amount: parseFloat(form.amount) }])
+    await supabase.from('checks').insert([{ ...form, amount: parseMoney(form.amount) }])
     const payId = 'CEK-' + Date.now().toString().slice(-6)
-    await supabase.from('payments').insert([{ id: payId, dealer_id: form.dealer_id, amount: parseFloat(form.amount), method: 'cek', note: 'Vade: ' + form.due_date + (form.bank ? ' / ' + form.bank : '') }])
+    await supabase.from('payments').insert([{ id: payId, dealer_id: form.dealer_id, amount: parseMoney(form.amount), method: 'cek', note: 'Vade: ' + form.due_date + (form.bank ? ' / ' + form.bank : '') }])
     const dealer = dealers.find(d => d.id === form.dealer_id)
-    await supabase.from('dealers').update({ balance: (dealer?.balance || 0) + parseFloat(form.amount) }).eq('id', form.dealer_id)
+    await supabase.from('dealers').update({ balance: (dealer?.balance || 0) + parseMoney(form.amount) }).eq('id', form.dealer_id)
     await logAdminAction('check_added', `dealer:${form.dealer_id}`, {
-      amount: parseFloat(form.amount),
+      amount: parseMoney(form.amount),
       due_date: form.due_date,
       status: form.status,
       bank: form.bank || null,
@@ -1201,24 +1362,100 @@ function Checks({ dealers, checks, loadAll, logAdminAction, isMobile }) {
     await logAdminAction('check_status_updated', `check:${id}`, { status })
     loadAll()
   }
+  const deleteCheck = async (check) => {
+    if (!window.confirm(`${fmtDate(check.due_date)} vadeli çek silinsin mi?`)) return
+    await supabase.from('checks').delete().eq('id', check.id)
+    const paymentNote = 'Vade: ' + check.due_date + (check.bank ? ' / ' + check.bank : '')
+    await supabase
+      .from('payments')
+      .delete()
+      .eq('dealer_id', check.dealer_id)
+      .eq('method', 'cek')
+      .eq('amount', parseMoney(check.amount))
+      .eq('note', paymentNote)
+    const dealer = dealers.find(d => d.id === check.dealer_id)
+    await supabase
+      .from('dealers')
+      .update({ balance: (dealer?.balance || 0) - parseMoney(check.amount) })
+      .eq('id', check.dealer_id)
+    await logAdminAction('check_deleted', `check:${check.id}`, {
+      dealer_id: check.dealer_id,
+      amount: parseMoney(check.amount),
+      due_date: check.due_date,
+      bank: check.bank || null,
+    })
+    loadAll()
+  }
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
         <h2 style={{ color: COLORS.primary }}>Çekler</h2>
-        <button style={S.btn()} onClick={() => setModal(true)}>+ Çek Ekle</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button style={S.btn(COLORS.teal)} onClick={exportReport}>Rapor İndir</button>
+          <button style={S.btn()} onClick={() => setModal(true)}>+ Çek Ekle</button>
+        </div>
+      </div>
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, minmax(160px, 1fr))', gap: 10 }}>
+          <div>
+            <label style={S.label}>Bayi</label>
+            <select style={S.select} value={filters.dealer_id} onChange={e => updateFilter('dealer_id', e.target.value)}>
+              <option value="">Tümü</option>
+              {dealers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Durum</label>
+            <select style={S.select} value={filters.status} onChange={e => updateFilter('status', e.target.value)}>
+              <option value="">Tümü</option>
+              {Object.entries(STATUS).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Vade (Başlangıç)</label>
+            <input type="date" style={S.input} value={filters.start_date} onChange={e => updateFilter('start_date', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Vade (Bitiş)</label>
+            <input type="date" style={S.input} value={filters.end_date} onChange={e => updateFilter('end_date', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Min Tutar</label>
+            <input type="number" style={S.input} value={filters.min_amount} onChange={e => updateFilter('min_amount', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Max Tutar</label>
+            <input type="number" style={S.input} value={filters.max_amount} onChange={e => updateFilter('max_amount', e.target.value)} />
+          </div>
+          <div style={{ gridColumn: isMobile ? 'auto' : 'span 2' }}>
+            <label style={S.label}>Arama</label>
+            <input style={S.input} value={filters.query} onChange={e => updateFilter('query', e.target.value)} placeholder="Bayi, banka, not..." />
+          </div>
+        </div>
+        <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#666' }}>Filtreli kayıt: <strong>{filteredChecks.length}</strong> • Toplam: <strong>{fmt(filteredTotal)}</strong></span>
+          <button style={{ ...S.btn('#9ca3af'), padding: '6px 12px', fontSize: 12 }} onClick={clearFilters}>Filtreleri Temizle</button>
+        </div>
       </div>
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
-          <thead><tr><th style={S.th}>Bayi</th><th style={S.th}>Tutar</th><th style={S.th}>Vade</th><th style={S.th}>Banka</th><th style={S.th}>Durum</th><th style={S.th}></th></tr></thead>
-          <tbody>{checks.map(c => (
+          <thead><tr><th style={S.th}>Bayi</th><th style={S.th}>Tutar</th><th style={S.th}>Vade</th><th style={S.th}>Banka</th><th style={S.th}>Durum</th><th style={S.th}>İşlemler</th></tr></thead>
+          <tbody>{filteredChecks.length === 0 ? (
+            <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#888', padding: 24 }}>Filtreye uygun çek bulunamadı.</td></tr>
+          ) : filteredChecks.map(c => (
             <tr key={c.id}>
               <td style={S.td}>{dealers.find(d => d.id === c.dealer_id)?.name || '-'}</td>
               <td style={S.td}><strong>{fmt(c.amount)}</strong></td>
               <td style={S.td}>{fmtDate(c.due_date)}</td>
               <td style={S.td}>{c.bank || '-'}</td>
               <td style={S.td}><span style={S.badge(STATUS[c.status]?.color || '#888')}>{STATUS[c.status]?.label || c.status}</span></td>
-              <td style={S.td}><select value={c.status} onChange={e => updateStatus(c.id, e.target.value)} style={{ ...S.select, width: 140, fontSize: 11, padding: '4px 8px' }}>{Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></td>
+              <td style={S.td}>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <select value={c.status} onChange={e => updateStatus(c.id, e.target.value)} style={{ ...S.select, width: 140, fontSize: 11, padding: '4px 8px' }}>{Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>
+                  <button style={{ ...S.btn('#ef4444'), fontSize: 11, padding: '5px 10px' }} onClick={() => deleteCheck(c)}>Sil</button>
+                </div>
+              </td>
             </tr>
           ))}</tbody>
         </table>
@@ -1247,19 +1484,52 @@ function Checks({ dealers, checks, loadAll, logAdminAction, isMobile }) {
 }
 
 function Products({ products, loadAll, logAdminAction, isMobile }) {
+  const emptyForm = { name: '', sku: '', box_size: '', default_price: '' }
   const [modal, setModal] = useState(false)
-  const [form, setForm] = useState({ name: '', sku: '', box_size: '', default_price: '' })
+  const [editingProduct, setEditingProduct] = useState(null)
+  const [form, setForm] = useState({ ...emptyForm })
+  const openCreateModal = () => {
+    setEditingProduct(null)
+    setForm({ ...emptyForm })
+    setModal(true)
+  }
+  const openEditModal = (product) => {
+    setEditingProduct(product)
+    setForm({
+      name: product.name || '',
+      sku: product.sku || '',
+      box_size: String(product.box_size ?? ''),
+      default_price: String(product.default_price ?? ''),
+    })
+    setModal(true)
+  }
 
   const save = async () => {
     if (!form.name) return
-    const { data: insertedProduct } = await supabase.from('products').insert([{ ...form, box_size: parseInt(form.box_size) || 0, default_price: parseFloat(form.default_price) || 0 }]).select('id, name, sku').single()
-    await logAdminAction('product_added', `product:${insertedProduct?.id || 'new'}`, {
-      name: insertedProduct?.name || form.name,
-      sku: insertedProduct?.sku || form.sku || null,
-      default_price: parseFloat(form.default_price) || 0,
-    })
+    const payload = {
+      name: form.name,
+      sku: form.sku,
+      box_size: parseInt(form.box_size, 10) || 0,
+      default_price: parseMoney(form.default_price),
+    }
+    if (editingProduct?.id) {
+      await supabase.from('products').update(payload).eq('id', editingProduct.id)
+      await logAdminAction('product_updated', `product:${editingProduct.id}`, {
+        name: payload.name,
+        sku: payload.sku || null,
+        default_price: payload.default_price,
+      })
+    } else {
+      const { data: insertedProduct } = await supabase.from('products').insert([payload]).select('id, name, sku').single()
+      await logAdminAction('product_added', `product:${insertedProduct?.id || 'new'}`, {
+        name: insertedProduct?.name || payload.name,
+        sku: insertedProduct?.sku || payload.sku || null,
+        default_price: payload.default_price,
+      })
+    }
     setModal(false)
-    setForm({ name: '', sku: '', box_size: '', default_price: '' })
+    setEditingProduct(null)
+    setForm({ ...emptyForm })
     loadAll()
   }
 
@@ -1267,17 +1537,18 @@ function Products({ products, loadAll, logAdminAction, isMobile }) {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
         <h2 style={{ color: COLORS.primary }}>Ürünler</h2>
-        <button style={S.btn()} onClick={() => setModal(true)}>+ Ürün Ekle</button>
+        <button style={S.btn()} onClick={openCreateModal}>+ Ürün Ekle</button>
       </div>
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
-          <thead><tr><th style={S.th}>SKU</th><th style={S.th}>Ürün Adı</th><th style={S.th}>Kutu İçi</th><th style={S.th}>Varsayılan Fiyat</th></tr></thead>
+          <thead><tr><th style={S.th}>SKU</th><th style={S.th}>Ürün Adı</th><th style={S.th}>Kutu İçi</th><th style={S.th}>Varsayılan Fiyat</th><th style={S.th}></th></tr></thead>
           <tbody>{products.map(p => (
             <tr key={p.id}>
               <td style={S.td}><span style={S.badge(COLORS.teal)}>{p.sku}</span></td>
               <td style={S.td}><strong>{p.name}</strong></td>
               <td style={S.td}>{p.box_size}</td>
               <td style={S.td}><strong style={{ color: COLORS.primary }}>{fmt(p.default_price)}</strong></td>
+              <td style={S.td}><button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => openEditModal(p)}>Düzenle</button></td>
             </tr>
           ))}</tbody>
         </table>
@@ -1285,7 +1556,7 @@ function Products({ products, loadAll, logAdminAction, isMobile }) {
       {modal && (
         <div style={S.modal} onClick={() => setModal(false)}>
           <div style={{ ...S.modalBox, width: isMobile ? '95vw' : 580, padding: isMobile ? 18 : 28 }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ color: COLORS.primary, marginBottom: 20 }}>Yeni Ürün</h3>
+            <h3 style={{ color: COLORS.primary, marginBottom: 20 }}>{editingProduct ? `Ürün Düzenle: ${editingProduct.name}` : 'Yeni Ürün'}</h3>
             <div style={S.grid2}>
               <div><label style={S.label}>Ürün Adı</label><input style={S.input} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} /></div>
               <div><label style={S.label}>SKU</label><input style={S.input} value={form.sku} onChange={e => setForm(p => ({ ...p, sku: e.target.value }))} /></div>
@@ -1294,7 +1565,7 @@ function Products({ products, loadAll, logAdminAction, isMobile }) {
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: isMobile ? 'flex-start' : 'flex-end', marginTop: 20, flexDirection: isMobile ? 'column' : 'row' }}>
               <button style={S.btn('#aaa')} onClick={() => setModal(false)}>İptal</button>
-              <button style={S.btn()} onClick={save}>Kaydet</button>
+              <button style={S.btn()} onClick={save}>{editingProduct ? 'Güncelle' : 'Kaydet'}</button>
             </div>
           </div>
         </div>
