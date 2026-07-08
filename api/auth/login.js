@@ -92,6 +92,7 @@ module.exports = async (req, res) => {
       const adminPayload = {
         username: adminAccount.username,
         name: adminAccount.name,
+        role: adminAccount.role || 'admin',
         is_superuser: Boolean(adminAccount.is_superuser),
       }
       const token = createSessionToken({ role: 'admin', admin: adminPayload })

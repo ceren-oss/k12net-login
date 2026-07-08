@@ -13,6 +13,9 @@ const COLORS = {
 
 const fmt = (n) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(n || 0)
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('tr-TR') : '-'
+const VAT_RATE = 0.2
+const getVatAmount = (amount) => (amount || 0) * VAT_RATE
+const getAmountWithVat = (amount) => (amount || 0) + getVatAmount(amount)
 
 const S = {
   header: { background: COLORS.primary, padding: '16px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
@@ -49,10 +52,60 @@ const S = {
 const BASE_URL = window.location.origin
 const ACTIVITY_MARKER_GRADE = '__ETKINLIK__'
 const PRODUCT_MARKER_GRADE = '__URUN__'
+const DEALER_GUIDE_DISMISS_KEY = 'kk_dealer_guide_dismissed'
+const PREORDER_FORECAST_MARKER = '[[CLASS_FORECAST]]'
+const FORECAST_GRADES = ['4 Yaş', '5-6 Yaş', '1. Sınıf', '2. Sınıf', '3. Sınıf', '4. Sınıf', '5. Sınıf', '6. Sınıf', '7. Sınıf', '8. Sınıf']
+const parseAmount = (value) => parseFloat(value) || 0
+const normalizeTrText = (value) => String(value || '').toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ').trim()
+const isMiniskopCenterDealer = (dealer) => {
+  const name = normalizeTrText(dealer?.name)
+  const username = normalizeTrText(dealer?.username)
+  return name.includes('miniskop merkez') || username.includes('miniskopmerkez') || username.includes('miniskop-merkez')
+}
+const getPreOrderSubtotal = (preOrder) => (preOrder?.pre_order_items || []).reduce(
+  (sum, item) => sum + ((parseInt(item?.qty, 10) || 0) * parseAmount(item?.unit_price)),
+  0
+)
+const getPreOrderCargoFee = (preOrder) => parseAmount(preOrder?.cargo_fee)
+const getPreOrderTotalWithCargo = (preOrder) => getPreOrderSubtotal(preOrder) + getPreOrderCargoFee(preOrder)
+const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
+const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
+const sanitizeForecastRows = (rows = []) => (rows || [])
+  .map(row => ({
+    grade: row?.grade || FORECAST_GRADES[0],
+    qty: parseInt(row?.qty, 10) || 0,
+  }))
+  .filter(row => row.grade && row.qty > 0)
+const splitPreOrderNote = (rawNote) => {
+  const note = String(rawNote || '')
+  const markerIndex = note.indexOf(PREORDER_FORECAST_MARKER)
+  if (markerIndex < 0) return { userNote: note.trim(), forecastRows: [] }
+  const userNote = note.slice(0, markerIndex).trim()
+  const forecastRaw = note.slice(markerIndex + PREORDER_FORECAST_MARKER.length).trim()
+  try {
+    const parsed = JSON.parse(forecastRaw)
+    return { userNote, forecastRows: sanitizeForecastRows(parsed) }
+  } catch {
+    return { userNote, forecastRows: [] }
+  }
+}
+const buildPreOrderNote = (rawNote, forecastRows = []) => {
+  const { userNote } = splitPreOrderNote(rawNote)
+  const normalizedRows = sanitizeForecastRows(forecastRows)
+  if (normalizedRows.length === 0) return userNote
+  const payload = `${PREORDER_FORECAST_MARKER}${JSON.stringify(normalizedRows)}`
+  return userNote ? `${userNote}\n\n${payload}` : payload
+}
 
 export default function DealerPortal({ dealer, onLogout }) {
   const [page, setPage] = useState('dashboard')
-  const [showGuide, setShowGuide] = useState(true)
+  const [showGuide, setShowGuide] = useState(() => {
+    try {
+      return localStorage.getItem(DEALER_GUIDE_DISMISS_KEY) !== '1'
+    } catch {
+      return true
+    }
+  })
   const [orders, setOrders] = useState([])
   const [preOrders, setPreOrders] = useState([])
   const [payments, setPayments] = useState([])
@@ -60,6 +113,7 @@ export default function DealerPortal({ dealer, onLogout }) {
   const [products, setProducts] = useState([])
   const [dealerPrices, setDealerPrices] = useState([])
   const [schoolForms, setSchoolForms] = useState([])
+  const canUseFlexiblePrice = isMiniskopCenterDealer(dealer)
   const isMobile = useIsMobile(960)
 
   useEffect(() => { loadAll() }, [])
@@ -113,6 +167,7 @@ export default function DealerPortal({ dealer, onLogout }) {
       const link = BASE_URL + '/form/' + existing.token
       navigator.clipboard.writeText(link).catch(() => {})
       alert('Link kopyalandı!\n\n' + link)
+      window.open(link, '_blank', 'noopener,noreferrer')
       return
     }
     const token = Math.random().toString(36).substring(2) + Date.now().toString(36)
@@ -123,6 +178,7 @@ export default function DealerPortal({ dealer, onLogout }) {
     const link = BASE_URL + '/form/' + token
     navigator.clipboard.writeText(link).catch(() => {})
     alert('Link oluşturuldu ve kopyalandı!\n\n' + link)
+    window.open(link, '_blank', 'noopener,noreferrer')
     loadAll()
   }
   const updatePreOrder = async (preOrderId, preOrderPayload, itemsPayload) => {
@@ -147,12 +203,11 @@ export default function DealerPortal({ dealer, onLogout }) {
     await loadAll()
     return true
   }
-  const finalizePreOrder = async (po) => {
-    if (po.status !== 'on_siparis') return false
-    if (!window.confirm('Ön sipariş kesinleştirilsin mi? Kesinleştirdikten sonra düzenleme/silme kapatılacaktır.')) return false
-    await supabase.from('pre_orders').update({ status: 'kesinlesti' }).eq('id', po.id)
-    await loadAll()
-    return true
+  const closeGuide = () => {
+    setShowGuide(false)
+    try {
+      localStorage.setItem(DEALER_GUIDE_DISMISS_KEY, '1')
+    } catch {}
   }
   const deletePreOrder = async (po) => {
     if (po.status !== 'on_siparis') {
@@ -263,21 +318,21 @@ export default function DealerPortal({ dealer, onLogout }) {
         <div className="portal-main-overlay" />
         <div className="portal-main-content">
           {page === 'dashboard' && <Dashboard dealer={dealer} orders={orders} payments={payments} checks={checks} preOrders={preOrders} schoolForms={schoolForms} isMobile={isMobile} />}
-          {page === 'preorder' && <PreOrder dealer={dealer} products={products} getPrice={getPrice} loadAll={loadAll} isMobile={isMobile} />}
-          {page === 'preorders' && <PreOrders preOrders={preOrders} products={products} schoolForms={schoolForms} createFormLink={createFormLink} approveForm={approveForm} updatePreOrder={updatePreOrder} deletePreOrder={deletePreOrder} finalizePreOrder={finalizePreOrder} getPrice={getPrice} isMobile={isMobile} />}
+          {page === 'preorder' && <PreOrder dealer={dealer} products={products} getPrice={getPrice} loadAll={loadAll} isFlexiblePriceDealer={canUseFlexiblePrice} isMobile={isMobile} />}
+          {page === 'preorders' && <PreOrders preOrders={preOrders} products={products} schoolForms={schoolForms} createFormLink={createFormLink} approveForm={approveForm} updatePreOrder={updatePreOrder} deletePreOrder={deletePreOrder} getPrice={getPrice} isFlexiblePriceDealer={canUseFlexiblePrice} isMobile={isMobile} />}
           {page === 'orders' && <Orders orders={orders} products={products} isMobile={isMobile} />}
           {page === 'payments' && <PaymentsView payments={payments} checks={checks} isMobile={isMobile} />}
           {page === 'checks' && <ChecksView checks={checks} isMobile={isMobile} />}
         </div>
       </div>
-      <RoleGuideModal role="dealer" open={showGuide} onClose={() => setShowGuide(false)} />
+      <RoleGuideModal role="dealer" open={showGuide} onClose={closeGuide} />
     </div>
   )
 }
 
 function Dashboard({ dealer, orders, payments, checks, preOrders, schoolForms, isMobile }) {
   const pendingChecks = checks.filter(c => c.status !== 'tahsil_edildi')
-  const pendingForms = schoolForms.filter(sf => sf.status === 'tamamlandi')
+  const pendingForms = schoolForms.filter(sf => sf.status === 'tamamlandi' || sf.status === 'okul_formu_guncelledi')
 
   return (
     <div>
@@ -321,7 +376,7 @@ function Dashboard({ dealer, orders, payments, checks, preOrders, schoolForms, i
             <tr key={o.id}>
               <td style={S.td}>{o.school_name || '-'}</td>
               <td style={S.td}>{o.season}</td>
-              <td style={S.td}><strong>{fmt(o.total)}</strong></td>
+              <td style={S.td}><strong>{fmt(getOrderTotalWithCargo(o))}</strong></td>
               <td style={S.td}><span style={S.badge(o.invoice_status === 'kesildi' ? COLORS.green : COLORS.orange)}>{o.invoice_status}</span></td>
             </tr>
           ))}</tbody>
@@ -331,12 +386,13 @@ function Dashboard({ dealer, orders, payments, checks, preOrders, schoolForms, i
   )
 }
 
-function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
+function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, isMobile }) {
   const [schoolName, setSchoolName] = useState('')
   const [address, setAddress] = useState('')
   const [season, setSeason] = useState('2026-2027')
   const [note, setNote] = useState('')
   const [items, setItems] = useState([{ product_id: '', qty: '', unit_price: 0 }])
+  const [classForecastRows, setClassForecastRows] = useState([{ grade: '1. Sınıf', qty: '' }])
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(false)
 
@@ -344,28 +400,51 @@ function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
     setItems(prev => {
       const next = [...prev]
       next[idx] = { ...next[idx], [field]: value }
-      if (field === 'product_id') next[idx].unit_price = getPrice(parseInt(value))
+      if (field === 'product_id') next[idx].unit_price = getPrice(parseInt(value, 10))
+      return next
+    })
+  }
+  const updateClassForecast = (idx, field, value) => {
+    setClassForecastRows(prev => {
+      const next = [...prev]
+      next[idx] = { ...next[idx], [field]: value }
       return next
     })
   }
 
   const addItem = () => setItems(prev => [...prev, { product_id: '', qty: '', unit_price: 0 }])
   const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx))
-  const total = items.reduce((s, i) => s + ((parseInt(i.qty) || 0) * (i.unit_price || 0)), 0)
-  const filledItems = items.filter(i => i.product_id && parseInt(i.qty) > 0)
+  const addClassForecastRow = () => setClassForecastRows(prev => [...prev, { grade: FORECAST_GRADES[0], qty: '' }])
+  const removeClassForecastRow = (idx) => setClassForecastRows(prev => prev.filter((_, i) => i !== idx))
+  const filledItems = items.filter(i => i.product_id && parseInt(i.qty, 10) > 0)
+  const validForecastRows = sanitizeForecastRows(classForecastRows)
+  const total = items.reduce((sum, item) => sum + ((parseInt(item.qty, 10) || 0) * parseAmount(item.unit_price)), 0)
+  const totalVat = getVatAmount(total)
+  const totalWithVat = getAmountWithVat(total)
+  const orderQtyTotal = filledItems.reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
+  const forecastQtyTotal = validForecastRows.reduce((sum, row) => sum + (row.qty || 0), 0)
 
   const save = async () => {
     if (!schoolName || filledItems.length === 0) return
+    if (validForecastRows.length === 0) {
+      alert('Ön görülen sınıf dağılımı zorunludur.')
+      return
+    }
     setLoading(true)
     const preOrderId = 'ON-' + Date.now().toString().slice(-6)
-    await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, address, season, note, status: 'on_siparis' }])
-    await supabase.from('pre_order_items').insert(filledItems.map(i => ({
+    const noteWithForecast = buildPreOrderNote(note, validForecastRows)
+    await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, address, season, note: noteWithForecast, status: 'on_siparis' }])
+    await supabase.from('pre_order_items').insert(filledItems.map(item => ({
       pre_order_id: preOrderId, grade: '-', branch: '-', teacher: '-',
-      product_id: parseInt(i.product_id), qty: parseInt(i.qty), unit_price: i.unit_price,
+      product_id: parseInt(item.product_id, 10), qty: parseInt(item.qty, 10), unit_price: parseAmount(item.unit_price),
     })))
-    setSubmitted(true); setLoading(false)
-    setSchoolName(''); setAddress(''); setNote('')
+    setSubmitted(true)
+    setLoading(false)
+    setSchoolName('')
+    setAddress('')
+    setNote('')
     setItems([{ product_id: '', qty: '', unit_price: 0 }])
+    setClassForecastRows([{ grade: '1. Sınıf', qty: '' }])
     loadAll()
     setTimeout(() => setSubmitted(false), 3000)
   }
@@ -387,11 +466,14 @@ function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
         <div><label style={S.label}>Adres</label><input style={S.input} value={address} onChange={e => setAddress(e.target.value)} placeholder="Kurum adresi" /></div>
       </div>
       <div style={S.card}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Ürün ve Adet Bilgileri</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary }}>Ürün ve Adet Bilgileri</div>
+          {isFlexiblePriceDealer && <span style={S.badge(COLORS.orange)}>Miniskop Merkez için esnek fiyat açık</span>}
+        </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
           <thead><tr style={{ background: COLORS.primary + '11' }}>
             <th style={S.th}>Ürün</th>
-            <th style={{ ...S.th, width: 120 }}>Birim Fiyat</th>
+            <th style={{ ...S.th, width: 140 }}>Birim Fiyat</th>
             <th style={{ ...S.th, width: 100 }}>Toplam Adet</th>
             <th style={{ ...S.th, width: 120 }}>Toplam</th>
             <th style={{ ...S.th, width: 40 }}></th>
@@ -399,9 +481,15 @@ function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
           <tbody>{items.map((item, idx) => (
             <tr key={idx} style={{ background: idx % 2 === 0 ? '#fff' : '#faf6ff' }}>
               <td style={S.td}><select style={S.select} value={item.product_id} onChange={e => updateItem(idx, 'product_id', e.target.value)}><option value="">Seçiniz...</option>{products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></td>
-              <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>{item.unit_price > 0 ? fmt(item.unit_price) : '-'}</td>
+              <td style={S.td}>
+                {isFlexiblePriceDealer ? (
+                  <input type="number" min="0" style={{ ...S.input, textAlign: 'right' }} value={item.unit_price} onChange={e => updateItem(idx, 'unit_price', e.target.value)} />
+                ) : (
+                  <div style={{ textAlign: 'right', fontWeight: 600 }}>{parseAmount(item.unit_price) > 0 ? fmt(item.unit_price) : '-'}</div>
+                )}
+              </td>
               <td style={S.td}><input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={item.qty} onChange={e => updateItem(idx, 'qty', e.target.value)} placeholder="0" /></td>
-              <td style={{ ...S.td, textAlign: 'right', fontWeight: 700, color: (parseInt(item.qty) || 0) > 0 ? COLORS.primary : '#ccc' }}>{(parseInt(item.qty) || 0) > 0 ? fmt((parseInt(item.qty) || 0) * (item.unit_price || 0)) : '-'}</td>
+              <td style={{ ...S.td, textAlign: 'right', fontWeight: 700, color: (parseInt(item.qty, 10) || 0) > 0 ? COLORS.primary : '#ccc' }}>{(parseInt(item.qty, 10) || 0) > 0 ? fmt((parseInt(item.qty, 10) || 0) * parseAmount(item.unit_price)) : '-'}</td>
               <td style={S.td}>{idx > 0 && <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeItem(idx)}>✕</button>}</td>
             </tr>
           ))}</tbody>
@@ -414,13 +502,48 @@ function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
         <div style={{ marginTop: 12 }}>
           <button style={{ ...S.btn(COLORS.teal), fontSize: 12 }} onClick={addItem}>+ Ürün Ekle</button>
         </div>
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: '#f8f4ff', display: 'grid', gap: 6 }}>
+          <div style={{ fontSize: 12, color: '#666' }}>KDV Hariç Toplam: <strong style={{ color: COLORS.primary }}>{fmt(total)}</strong></div>
+          <div style={{ fontSize: 12, color: '#666' }}>KDV (%20): <strong style={{ color: COLORS.orange }}>{fmt(totalVat)}</strong></div>
+          <div style={{ fontSize: 13, color: '#333', fontWeight: 800 }}>KDV Dahil Toplam: <span style={{ color: COLORS.green }}>{fmt(totalWithVat)}</span></div>
+        </div>
+      </div>
+      <div style={S.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 12, gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary }}>Ön Görülen Sınıf Dağılımı</div>
+          <button style={{ ...S.btn(COLORS.teal), fontSize: 12, padding: '7px 14px' }} onClick={addClassForecastRow}>+ Sınıf Satırı</button>
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
+          <thead><tr><th style={S.th}>Sınıf</th><th style={S.th}>Adet</th><th style={{ ...S.th, width: 40 }}></th></tr></thead>
+          <tbody>{classForecastRows.map((row, idx) => (
+            <tr key={`forecast-row-${idx}`}>
+              <td style={S.td}>
+                <select style={S.select} value={row.grade} onChange={e => updateClassForecast(idx, 'grade', e.target.value)}>
+                  {FORECAST_GRADES.map(grade => <option key={grade} value={grade}>{grade}</option>)}
+                </select>
+              </td>
+              <td style={S.td}><input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={row.qty} onChange={e => updateClassForecast(idx, 'qty', e.target.value)} /></td>
+              <td style={S.td}>{idx > 0 && <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeClassForecastRow(idx)}>✕</button>}</td>
+            </tr>
+          ))}</tbody>
+          <tfoot>
+            <tr style={{ background: '#f8f4ff' }}>
+              <td style={{ ...S.td, fontWeight: 700, textAlign: 'right' }}>Toplam</td>
+              <td style={{ ...S.td, fontWeight: 700, color: forecastQtyTotal === orderQtyTotal ? COLORS.green : COLORS.orange }}>{forecastQtyTotal}</td>
+              <td style={S.td}></td>
+            </tr>
+          </tfoot>
+        </table>
+        <div style={{ marginTop: 10, fontSize: 12, color: forecastQtyTotal === orderQtyTotal ? COLORS.green : COLORS.orange }}>
+          Sipariş adedi: <strong>{orderQtyTotal}</strong> • Ön görülen sınıf toplamı: <strong>{forecastQtyTotal}</strong>
+        </div>
       </div>
       <div style={S.card}>
         <label style={S.label}>Not</label>
         <input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Not..." />
       </div>
       <div style={{ display: 'flex', justifyContent: isMobile ? 'stretch' : 'flex-end' }}>
-        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || filledItems.length === 0}>
+        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || filledItems.length === 0 || validForecastRows.length === 0}>
           {loading ? 'Gönderiliyor...' : 'Ön Sipariş Gönder'}
         </button>
       </div>
@@ -428,7 +551,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isMobile }) {
   )
 }
 
-function PreOrders({ preOrders, products, schoolForms, createFormLink, approveForm, updatePreOrder, deletePreOrder, finalizePreOrder, getPrice, isMobile }) {
+function PreOrders({ preOrders, products, schoolForms, createFormLink, approveForm, updatePreOrder, deletePreOrder, getPrice, isFlexiblePriceDealer, isMobile }) {
   const emptyItem = { product_id: '', qty: '', unit_price: 0 }
   const [detail, setDetail] = useState(null)
   const [formDetail, setFormDetail] = useState(null)
@@ -437,6 +560,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const [editingPreOrder, setEditingPreOrder] = useState(null)
   const [editForm, setEditForm] = useState({ school_name: '', address: '', season: '2026-2027', note: '' })
   const [editItems, setEditItems] = useState([{ ...emptyItem }])
+  const [editClassForecast, setEditClassForecast] = useState([{ grade: FORECAST_GRADES[0], qty: '' }])
   const [filters, setFilters] = useState({ id: '', school: '', season: '', total: '', formStatus: '', status: '' })
   const getFormClassRows = (schoolForm) => (schoolForm?.school_form_items || []).filter(item => item.grade !== '__URUN__' && item.grade !== '__ETKINLIK__')
   const getFormActivitiesByLevel = (schoolForm) => (schoolForm?.school_form_items || [])
@@ -444,18 +568,31 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     .reduce((acc, item) => {
       const level = item.branch
       const activityName = (item.teacher || '').trim()
+      const activityCount = Math.max(parseInt(item.qty, 10) || 0, 1)
       if (!level || !activityName) return acc
-      if (!acc[level]) acc[level] = []
-      if (!acc[level].includes(activityName)) acc[level].push(activityName)
+      if (!acc[level]) acc[level] = {}
+      acc[level][activityName] = (acc[level][activityName] || 0) + activityCount
       return acc
     }, {})
+  const toActivityDisplay = (activityMapByLevel = {}) => Object.fromEntries(
+    Object.entries(activityMapByLevel).map(([level, activityMap]) => [
+      level,
+      Object.entries(activityMap || {}).map(([name, count]) => count > 1 ? `${name} (x${count})` : name)
+    ])
+  )
+  const formLinkedPreOrder = formDetail ? preOrders.find(po => po.id === formDetail.pre_order_id) : null
+  const detailLinkedForm = detail ? schoolForms.find(sf => sf.pre_order_id === detail.id) : null
   const formClassRows = getFormClassRows(formDetail)
-  const formActivitiesByLevel = getFormActivitiesByLevel(formDetail)
+  const formActivitiesByLevel = toActivityDisplay(getFormActivitiesByLevel(formDetail))
+  const detailFormClassRows = getFormClassRows(detailLinkedForm)
+  const detailFormActivitiesByLevel = toActivityDisplay(getFormActivitiesByLevel(detailLinkedForm))
+  const detailNoteData = splitPreOrderNote(detail?.note || '')
+  const detailForecastRows = detailNoteData.forecastRows
   const downloadApprovedForm = (schoolForm) => {
     downloadSchoolFormReport({
       form: schoolForm,
       classRows: getFormClassRows(schoolForm),
-      activitiesByLevel: getFormActivitiesByLevel(schoolForm),
+      activitiesByLevel: toActivityDisplay(getFormActivitiesByLevel(schoolForm)),
       filenamePrefix: 'onayli-okul-formu',
     })
   }
@@ -470,6 +607,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const FORM_STATUS = {
     bekliyor: { label: 'Form Gönderilmedi', color: '#aaa' },
     tamamlandi: { label: 'Okul Doldurdu', color: COLORS.orange },
+    okul_formu_guncelledi: { label: 'Okul Formu Güncelledi', color: COLORS.pink },
     onaylandi: { label: 'Onaylandı', color: COLORS.green }
   }
   const normalizeText = (value) => String(value || '').toLocaleLowerCase('tr-TR')
@@ -491,14 +629,22 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     if (filters.status && !normalizeText(statusLabel).includes(normalizeText(filters.status))) return false
     return true
   })
+  const filteredTotal = filteredPreOrders.reduce((sum, po) => {
+    const items = po.pre_order_items || []
+    return sum + items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+  }, 0)
+  const filteredTotalVat = getVatAmount(filteredTotal)
+  const filteredTotalWithVat = getAmountWithVat(filteredTotal)
   const openEdit = (po) => {
+    const { userNote, forecastRows } = splitPreOrderNote(po.note)
     setEditingPreOrder(po)
     setEditForm({
       school_name: po.school_name || '',
       address: po.address || '',
       season: po.season || '2026-2027',
-      note: po.note || '',
+      note: userNote,
     })
+    setEditClassForecast(forecastRows.length > 0 ? forecastRows : [{ grade: FORECAST_GRADES[0], qty: '' }])
     const mappedItems = (po.pre_order_items || []).map(item => ({
       product_id: String(item.product_id || ''),
       qty: String(item.qty || ''),
@@ -520,12 +666,31 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     const next = prev.filter((_, i) => i !== idx)
     return next.length > 0 ? next : [{ ...emptyItem }]
   })
+  const addEditClassForecastRow = () => setEditClassForecast(prev => [...prev, { grade: FORECAST_GRADES[0], qty: '' }])
+  const removeEditClassForecastRow = (idx) => setEditClassForecast(prev => {
+    const next = prev.filter((_, i) => i !== idx)
+    return next.length > 0 ? next : [{ grade: FORECAST_GRADES[0], qty: '' }]
+  })
+  const updateEditClassForecast = (idx, field, value) => {
+    setEditClassForecast(prev => {
+      const next = [...prev]
+      next[idx] = { ...next[idx], [field]: value }
+      return next
+    })
+  }
   const filledEditItems = editItems.filter(item => item.product_id && parseInt(item.qty) > 0)
+  const validEditClassForecast = sanitizeForecastRows(editClassForecast)
   const editTotal = filledEditItems.reduce((s, i) => s + ((parseInt(i.qty) || 0) * (i.unit_price || 0)), 0)
+  const editOrderQtyTotal = filledEditItems.reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
+  const editForecastQtyTotal = validEditClassForecast.reduce((sum, row) => sum + (row.qty || 0), 0)
   const saveEditedPreOrder = async () => {
     if (!editingPreOrder) return
     if (!editForm.school_name || filledEditItems.length === 0) {
       alert('Kurum adı ve en az bir ürün zorunludur.')
+      return
+    }
+    if (validEditClassForecast.length === 0) {
+      alert('Ön görülen sınıf dağılımı zorunludur.')
       return
     }
     setEditSaving(true)
@@ -534,7 +699,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
         school_name: editForm.school_name,
         address: editForm.address,
         season: editForm.season,
-        note: editForm.note,
+        note: buildPreOrderNote(editForm.note, validEditClassForecast),
       }, filledEditItems)
       if (!updated) return
       setEditModal(false)
@@ -548,14 +713,54 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     const deleted = await deletePreOrder(po)
     if (deleted && detail?.id === po.id) setDetail(null)
   }
-  const handleFinalize = async (po) => {
-    const finalized = await finalizePreOrder(po)
-    if (finalized && detail?.id === po.id) setDetail(null)
-  }
+  const sharedFormRows = schoolForms.flatMap(form => {
+    const linkedPreOrder = preOrders.find(po => po.id === form.pre_order_id)
+    const classRows = getFormClassRows(form)
+    const activitiesByLevel = toActivityDisplay(getFormActivitiesByLevel(form))
+    const activitiesText = Object.entries(activitiesByLevel).map(([level, activities]) => `${level}: ${activities.join(', ')}`).join(' | ')
+    const productsText = (linkedPreOrder?.pre_order_items || [])
+      .map(item => `${products.find(p => p.id === item.product_id)?.name || '-'} x${item.qty || 0}`)
+      .join(', ')
+    if (classRows.length === 0) {
+      return [{
+        form_id: form.id,
+        pre_order_id: linkedPreOrder?.id || form.pre_order_id || '-',
+        school_name: form.school_name || linkedPreOrder?.school_name || '-',
+        season: linkedPreOrder?.season || '-',
+        status: FORM_STATUS[form.status]?.label || form.status || '-',
+        grade: '-',
+        branch: '-',
+        teacher: '-',
+        teacher_email: '-',
+        teacher_phone: '-',
+        qty: 0,
+        activities_text: activitiesText || '-',
+        products_text: productsText || '-',
+      }]
+    }
+    return classRows.map(row => ({
+      form_id: form.id,
+      pre_order_id: linkedPreOrder?.id || form.pre_order_id || '-',
+      school_name: form.school_name || linkedPreOrder?.school_name || '-',
+      season: linkedPreOrder?.season || '-',
+      status: FORM_STATUS[form.status]?.label || form.status || '-',
+      grade: row.grade || '-',
+      branch: row.branch || '-',
+      teacher: row.teacher || '-',
+      teacher_email: row.teacher_email || '-',
+      teacher_phone: row.teacher_phone || '-',
+      qty: row.qty || 0,
+      activities_text: activitiesText || '-',
+      products_text: productsText || '-',
+    }))
+  })
 
   return (
     <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Ön Siparişlerim</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
+        <h2 style={{ color: COLORS.primary, marginBottom: 0 }}>Ön Siparişlerim</h2>
+        <span style={{ ...S.badge(COLORS.teal), alignSelf: isMobile ? 'flex-start' : 'center' }}>Ortak e-tablo: {sharedFormRows.length} satır</span>
+      </div>
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
           <thead>
@@ -605,14 +810,13 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                     {isEditable && (
                       <>
                         <button style={{ ...S.btn('#4f46e5'), fontSize: 11, padding: '5px 10px' }} onClick={() => openEdit(po)}>Düzenle</button>
-                        <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => handleFinalize(po)}>Kesinleştir</button>
                         <button style={{ ...S.btn('#ef4444'), fontSize: 11, padding: '5px 10px' }} onClick={() => handleDelete(po)}>Sil</button>
                       </>
                     )}
                     {!isEditable && po.status === 'kesinlesti' && (
                       <span style={{ ...S.badge('#6b7280'), alignSelf: 'center' }}>Düzenleme Kilitli</span>
                     )}
-                    {sf && sf.status === 'tamamlandi' && (
+                    {sf && (sf.status === 'tamamlandi' || sf.status === 'okul_formu_guncelledi') && (
                       <>
                         <button style={{ ...S.btn(COLORS.yellow), fontSize: 11, padding: '5px 10px' }} onClick={() => setFormDetail(sf)}>Formu Göster</button>
                         <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => approveForm(sf, po)}>Onayla</button>
@@ -629,6 +833,47 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               </tr>
             )
           })}</tbody>
+          <tfoot>
+            <tr style={{ background: '#f8f4ff' }}>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.primary }}>TOPLAM (KDV Hariç):</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}><strong>{fmt(filteredTotal)}</strong></td>
+              <td colSpan={3} style={S.td}></td>
+            </tr>
+            <tr style={{ background: '#f8f4ff' }}>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.green }}>TOPLAM (KDV Dahil):</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.green }}><strong>{fmt(filteredTotalWithVat)}</strong></td>
+              <td colSpan={3} style={S.td}></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div style={S.card}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: COLORS.primary, marginBottom: 10 }}>Ortak Form E-Tablosu</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1380 }}>
+          <thead><tr>
+            <th style={S.th}>Form</th><th style={S.th}>Ön Sipariş</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Durum</th>
+            <th style={S.th}>Sınıf</th><th style={S.th}>Şube</th><th style={S.th}>Öğretmen</th><th style={S.th}>Mail</th><th style={S.th}>Tel</th><th style={S.th}>Adet</th>
+            <th style={S.th}>Seviye Bazlı Ürünler</th><th style={S.th}>Sipariş Ürünleri</th>
+          </tr></thead>
+          <tbody>{sharedFormRows.length === 0 ? (
+            <tr><td colSpan={13} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 24 }}>Form kaydı bulunamadı</td></tr>
+          ) : sharedFormRows.map((row, idx) => (
+            <tr key={`shared-form-row-${row.form_id}-${idx}`}>
+              <td style={S.td}>{row.form_id}</td>
+              <td style={S.td}>{row.pre_order_id}</td>
+              <td style={S.td}><strong>{row.school_name}</strong></td>
+              <td style={S.td}>{row.season}</td>
+              <td style={S.td}>{row.status}</td>
+              <td style={S.td}>{row.grade}</td>
+              <td style={S.td}>{row.branch}</td>
+              <td style={S.td}>{row.teacher}</td>
+              <td style={S.td}>{row.teacher_email}</td>
+              <td style={S.td}>{row.teacher_phone}</td>
+              <td style={S.td}><strong>{row.qty}</strong></td>
+              <td style={S.td}>{row.activities_text}</td>
+              <td style={S.td}>{row.products_text}</td>
+            </tr>
+          ))}</tbody>
         </table>
       </div>
       {editModal && (
@@ -676,8 +921,14 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                   <td style={S.td}>
                     <input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={item.qty} onChange={e => updateEditItem(idx, 'qty', e.target.value)} />
                   </td>
-                  <td style={S.td}><strong>{fmt(item.unit_price)}</strong></td>
-                  <td style={S.td}><strong>{fmt((parseInt(item.qty) || 0) * (item.unit_price || 0))}</strong></td>
+                  <td style={S.td}>
+                    {isFlexiblePriceDealer ? (
+                      <input type="number" min="0" style={{ ...S.input, textAlign: 'right' }} value={item.unit_price} onChange={e => updateEditItem(idx, 'unit_price', e.target.value)} />
+                    ) : (
+                      <strong>{fmt(item.unit_price)}</strong>
+                    )}
+                  </td>
+                  <td style={S.td}><strong>{fmt((parseInt(item.qty) || 0) * parseAmount(item.unit_price))}</strong></td>
                   <td style={S.td}>
                     <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeEditItem(idx)} disabled={editSaving}>✕</button>
                   </td>
@@ -694,6 +945,29 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             <div style={{ marginBottom: 14 }}>
               <button style={{ ...S.btn(COLORS.teal), fontSize: 12 }} onClick={addEditItem} disabled={editSaving}>+ Ürün Ekle</button>
             </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 8, gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary }}>Ön Görülen Sınıf Dağılımı</div>
+                <button style={{ ...S.btn(COLORS.teal), fontSize: 12, padding: '6px 10px' }} onClick={addEditClassForecastRow} disabled={editSaving}>+ Satır Ekle</button>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
+                <thead><tr><th style={S.th}>Sınıf</th><th style={S.th}>Adet</th><th style={{ ...S.th, width: 40 }}></th></tr></thead>
+                <tbody>{editClassForecast.map((row, idx) => (
+                  <tr key={`edit-forecast-${idx}`}>
+                    <td style={S.td}>
+                      <select style={S.select} value={row.grade} onChange={e => updateEditClassForecast(idx, 'grade', e.target.value)} disabled={editSaving}>
+                        {FORECAST_GRADES.map(grade => <option key={grade} value={grade}>{grade}</option>)}
+                      </select>
+                    </td>
+                    <td style={S.td}><input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={row.qty} onChange={e => updateEditClassForecast(idx, 'qty', e.target.value)} disabled={editSaving} /></td>
+                    <td style={S.td}>{idx > 0 && <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeEditClassForecastRow(idx)} disabled={editSaving}>✕</button>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+              <div style={{ marginTop: 8, fontSize: 12, color: editForecastQtyTotal === editOrderQtyTotal ? COLORS.green : COLORS.orange }}>
+                Sipariş adedi: <strong>{editOrderQtyTotal}</strong> • Ön görülen sınıf toplamı: <strong>{editForecastQtyTotal}</strong>
+              </div>
+            </div>
             <div style={{ marginBottom: 16 }}>
               <label style={S.label}>Not</label>
               <input style={S.input} value={editForm.note} onChange={e => setEditForm(prev => ({ ...prev, note: e.target.value }))} />
@@ -709,7 +983,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
       {/* Ön sipariş detay */}
       {detail && (
         <div style={S.modal} onClick={() => setDetail(null)}>
-          <div style={{ ...S.modalBox, width: isMobile ? '95vw' : 600, padding: isMobile ? 18 : 28 }} onClick={e => e.stopPropagation()}>
+          <div style={{ ...S.modalBox, width: isMobile ? '95vw' : 760, padding: isMobile ? 18 : 28 }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 16, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
               <h3 style={{ color: COLORS.primary }}>Ön Sipariş Detayı</h3>
               <button style={S.btn('#aaa')} onClick={() => setDetail(null)}>Kapat</button>
@@ -729,6 +1003,90 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 </tr>
               ))}</tbody>
             </table>
+            <div style={{ marginTop: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                <span>Ara Toplam</span>
+                <strong>{fmt(getPreOrderSubtotal(detail))}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                <span>Kargo Bedeli</span>
+                <strong>{fmt(getPreOrderCargoFee(detail))}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
+                <span>Kargo Dahil Toplam</span>
+                <span>{fmt(getPreOrderTotalWithCargo(detail))}</span>
+              </div>
+              {detailNoteData.userNote && (
+                <div style={{ marginTop: 10, fontSize: 12, color: '#444' }}>
+                  <strong>Not:</strong> {detailNoteData.userNote}
+                </div>
+              )}
+            </div>
+            {detailForecastRows.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 8 }}>Ön Görülen Sınıf Dağılımı</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
+                  <thead><tr><th style={S.th}>Sınıf</th><th style={S.th}>Adet</th></tr></thead>
+                  <tbody>{detailForecastRows.map((row, idx) => (
+                    <tr key={`detail-forecast-${idx}`}>
+                      <td style={S.td}>{row.grade}</td>
+                      <td style={S.td}><strong>{row.qty || 0}</strong></td>
+                    </tr>
+                  ))}</tbody>
+                  <tfoot>
+                    <tr style={{ background: '#f8f4ff' }}>
+                      <td style={{ ...S.td, fontWeight: 800, textAlign: 'right' }}>TOPLAM:</td>
+                      <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{detailForecastRows.reduce((sum, row) => sum + (row.qty || 0), 0)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+            <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#f8f4ff' }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.primary, marginBottom: 8 }}>Form Detayı</div>
+              {!detailLinkedForm ? (
+                <div style={{ fontSize: 12, color: '#666' }}>Bu ön sipariş için henüz form oluşturulmamış.</div>
+              ) : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                    <div><span style={{ fontSize: 11, color: '#888' }}>FORM DURUMU</span><div style={{ fontWeight: 700 }}>{FORM_STATUS[detailLinkedForm.status]?.label || detailLinkedForm.status}</div></div>
+                    <div><span style={{ fontSize: 11, color: '#888' }}>YETKİLİ</span><div style={{ fontWeight: 700 }}>{detailLinkedForm.contact_name || '-'}</div></div>
+                    <div><span style={{ fontSize: 11, color: '#888' }}>TELEFON</span><div style={{ fontWeight: 700 }}>{detailLinkedForm.contact_phone || '-'}</div></div>
+                    <div><span style={{ fontSize: 11, color: '#888' }}>MAIL</span><div style={{ fontWeight: 700 }}>{detailLinkedForm.contact_email || '-'}</div></div>
+                    <div><span style={{ fontSize: 11, color: '#888' }}>VERGİ NO</span><div style={{ fontWeight: 700 }}>{detailLinkedForm.tax_no || '-'}</div></div>
+                    <div><span style={{ fontSize: 11, color: '#888' }}>VERGİ DAİRESİ</span><div style={{ fontWeight: 700 }}>{detailLinkedForm.tax_office || '-'}</div></div>
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>SEVİYE BAZLI ÜRÜN LİSTESİ</div>
+                    {Object.keys(detailFormActivitiesByLevel).length > 0 ? (
+                      Object.entries(detailFormActivitiesByLevel).map(([level, activities]) => (
+                        <div key={level} style={{ fontSize: 12, color: '#333', fontWeight: 700, marginBottom: 4 }}>
+                          {level}: {activities.join(', ')}
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#666' }}>-</div>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.primary, marginBottom: 8 }}>Sınıf Dağılımı</div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+                    <thead><tr><th style={S.th}>Sınıf</th><th style={S.th}>Şube</th><th style={S.th}>Öğretmen</th><th style={S.th}>Mail</th><th style={S.th}>Tel</th><th style={S.th}>Adet</th></tr></thead>
+                    <tbody>{detailFormClassRows.length === 0 ? (
+                      <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#999' }}>Sınıf detayı yok</td></tr>
+                    ) : detailFormClassRows.map((row, idx) => (
+                      <tr key={`detail-form-row-${idx}`}>
+                        <td style={S.td}>{row.grade || '-'}</td>
+                        <td style={S.td}>{row.branch || '-'}</td>
+                        <td style={S.td}>{row.teacher || '-'}</td>
+                        <td style={S.td}>{row.teacher_email || '-'}</td>
+                        <td style={S.td}>{row.teacher_phone || '-'}</td>
+                        <td style={S.td}><strong>{row.qty || 0}</strong></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -765,6 +1123,22 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 <div style={{ fontWeight: 700, fontSize: 13, color: '#333' }}>-</div>
               )}
             </div>
+            {formLinkedPreOrder && (
+              <div style={{ marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 8 }}>Sipariş Ürün Detayı</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 680 }}>
+                  <thead><tr><th style={S.th}>Ürün</th><th style={S.th}>Adet</th><th style={S.th}>Birim Fiyat</th><th style={S.th}>Toplam</th></tr></thead>
+                  <tbody>{(formLinkedPreOrder.pre_order_items || []).map((item, idx) => (
+                    <tr key={`form-linked-item-${idx}`}>
+                      <td style={S.td}>{products.find(p => p.id === item.product_id)?.name || '-'}</td>
+                      <td style={S.td}>{item.qty || 0}</td>
+                      <td style={S.td}>{fmt(item.unit_price || 0)}</td>
+                      <td style={S.td}><strong>{fmt((item.qty || 0) * (item.unit_price || 0))}</strong></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 10 }}>Sınıf Dağılımı</div>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
               <thead><tr>
@@ -825,16 +1199,18 @@ function Orders({ orders, products, isMobile }) {
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
           <thead><tr>
-            <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Tutar</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
+            <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Ara Toplam</th><th style={S.th}>Kargo</th><th style={S.th}>Kargo Dahil Toplam</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
           </tr></thead>
           <tbody>{orders.length === 0 ? (
-            <tr><td colSpan={8} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Henüz sipariş yok</td></tr>
+            <tr><td colSpan={10} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Henüz sipariş yok</td></tr>
           ) : orders.map(o => (
             <tr key={o.id}>
               <td style={S.td}><strong style={{ color: COLORS.primary }}>{o.id}</strong></td>
               <td style={S.td}>{o.school_name || '-'}</td>
               <td style={S.td}>{o.season}</td>
               <td style={S.td}><strong>{fmt(o.total)}</strong></td>
+              <td style={S.td}>{fmt(getOrderCargoFee(o))}</td>
+              <td style={S.td}><strong>{fmt(getOrderTotalWithCargo(o))}</strong></td>
               <td style={S.td}><span style={S.badge(STATUS_META[o.status]?.color || '#aaa')}>{STATUS_META[o.status]?.label || (o.status || '-')}</span></td>
               <td style={S.td}><span style={S.badge(o.invoice_status === 'kesildi' ? COLORS.green : COLORS.orange)}>{o.invoice_status}</span></td>
               <td style={S.td}><span style={S.badge(o.dia_status ? COLORS.green : '#aaa')}>{o.dia_status ? 'İşlendi' : 'İşlenmedi'}</span></td>
@@ -877,6 +1253,20 @@ function Orders({ orders, products, isMobile }) {
                     </tr>
                   ))}</tbody>
                 </table>
+                <div style={{ marginBottom: 14, background: '#f8f4ff', borderRadius: 10, padding: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                    <span>Ara Toplam</span>
+                    <strong>{fmt(detail.total || 0)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                    <span>Kargo Bedeli</span>
+                    <strong>{fmt(getOrderCargoFee(detail))}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
+                    <span>Kargo Dahil Toplam</span>
+                    <span>{fmt(getOrderTotalWithCargo(detail))}</span>
+                  </div>
+                </div>
                 {detailClassRows.length > 0 && (
                   <>
                     <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 10 }}>Sınıf Dağılımı</div>

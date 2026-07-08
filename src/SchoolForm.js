@@ -342,40 +342,46 @@ const parsePackageSizeFromName = (name) => {
   const count = parseInt(match[1], 10)
   return Number.isFinite(count) ? count : null
 }
-const getPackageSelectionConfig = (orderItems, productsById) => {
+const getPackageSelectionConfigs = (orderItems, productsById) => {
+  const found = {}
   for (const item of orderItems || []) {
     const productName = productsById[item.product_id] || ''
     const count = parsePackageSizeFromName(productName)
-    if (PACKAGE_SELECTION_COUNTS.includes(count)) {
-      return { count, productName }
+    const orderQty = parseInt(item.qty, 10) || 0
+    if (PACKAGE_SELECTION_COUNTS.includes(count) && orderQty > 0) {
+      if (!found[count]) found[count] = { count }
     }
   }
-  return null
+  return Object.values(found).sort((a, b) => a.count - b.count)
 }
-const getSelectionGroupRules = (requiredSelectionCount, availableOptions = []) => {
-  if (!requiredSelectionCount) return []
-  const firstGroupOptions = availableOptions.slice(0, 8)
-  const secondGroupOptions = availableOptions.slice(8, 16)
-  if (requiredSelectionCount === 12 && firstGroupOptions.length > 0 && secondGroupOptions.length > 0) {
-    return [
-      { key: 'first8', label: 'İlk 8 Ürün', required: 6, options: firstGroupOptions },
-      { key: 'second8', label: 'İkinci 8 Ürün', required: 6, options: secondGroupOptions },
-    ]
+const getPackageInfoText = (packageConfigs = []) => {
+  if (!packageConfigs.length) return ''
+  const packageSummary = packageConfigs
+    .map(config => `${config.count}'li`)
+    .join(' + ')
+  if (packageConfigs.length === 1) {
+    return `${packageSummary} paket seçimi için her sınıf seviyesinde ${packageConfigs[0].count} ürün seçiniz.`
   }
+  return `Bu siparişte ${packageSummary} paketleri birlikte bulunuyor. Her sınıf seviyesi için paket tipini ayrı seçip, o pakete göre ürün sayısını tamamlayınız.`
+}
+const getPackageTitleText = (packageConfigs = []) => {
+  if (!packageConfigs.length) return ''
+  const label = packageConfigs
+    .map(config => `${config.count}'li`)
+    .join(' + ')
+  return `${label} Keşif Kutusu`
+}
+const getOrderItemsTotalQty = (orderItems = []) => orderItems
+  .reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
+const getClassItemsTotalQty = (classItems = []) => classItems
+  .reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
+const getQtyMismatchMessage = (orderQtyTotal, classQtyTotal) => `Sınıf toplam adedi (${classQtyTotal}) sipariş adedinden (${orderQtyTotal}) az olamaz.`
 
-  if (requiredSelectionCount === 8 && firstGroupOptions.length > 0 && secondGroupOptions.length > 0) {
-    return [
-      { key: 'first8', label: 'İlk 8 Ürün', required: 4, options: firstGroupOptions },
-      { key: 'second8', label: 'İkinci 8 Ürün', required: 4, options: secondGroupOptions },
-    ]
-  }
-  if (requiredSelectionCount === 4 && firstGroupOptions.length > 0 && secondGroupOptions.length > 0) {
-    return [
-      { key: 'first8', label: 'İlk 8 Ürün', required: 2, options: firstGroupOptions },
-      { key: 'second8', label: 'İkinci 8 Ürün', required: 2, options: secondGroupOptions },
-    ]
-  }
-  return [{ key: 'all', label: 'Ürünler', required: requiredSelectionCount, options: availableOptions }]
+const getOrderQtyMismatchMessage = (orderItems = [], classItems = []) => {
+  const orderQtyTotal = getOrderItemsTotalQty(orderItems)
+  const classQtyTotal = getClassItemsTotalQty(classItems)
+  if (classQtyTotal < orderQtyTotal) return getQtyMismatchMessage(orderQtyTotal, classQtyTotal)
+  return ''
 }
 
 
@@ -408,6 +414,7 @@ export default function SchoolForm({ token }) {
   // Sınıf dağılımı
   const [classItems, setClassItems] = useState([{ grade: '1. Sınıf', branch: '', teacher: '', teacher_email: '', teacher_phone: '', qty: '' }])
   const [selectedActivitiesByLevel, setSelectedActivitiesByLevel] = useState({})
+  const [selectedPackageByLevel, setSelectedPackageByLevel] = useState({})
   const [selectedStemByPlan, setSelectedStemByPlan] = useState({})
   const [productsById, setProductsById] = useState({})
   const isMobile = useIsMobile(960)
@@ -441,11 +448,13 @@ export default function SchoolForm({ token }) {
     if (items && items.length > 0) {
       const classRows = []
       const selectedByLevel = {}
+      const selectedPackageBySavedLevel = {}
       const selectedStem = {}
       items.forEach(i => {
         if (i.grade === ACTIVITY_MARKER_GRADE) {
           const level = i.branch
           const activityName = (i.teacher || '').trim()
+          const activityCount = Math.max(parseInt(i.qty, 10) || 0, 1)
           const stemMeta = parseStemBranchKey(level)
           if (stemMeta && activityName) {
             if (!selectedStem[stemMeta.planKey]) selectedStem[stemMeta.planKey] = {}
@@ -454,11 +463,18 @@ export default function SchoolForm({ token }) {
           }
           if (level && activityName) {
             if (!selectedByLevel[level]) selectedByLevel[level] = []
-            selectedByLevel[level].push(activityName)
+            for (let idx = 0; idx < activityCount; idx += 1) {
+              selectedByLevel[level].push(activityName)
+            }
           }
           return
         }
         if (i.grade === PRODUCT_MARKER_GRADE) {
+          const level = String(i.branch || '').trim()
+          const savedPackageCount = parseInt(i.qty, 10) || parsePackageSizeFromName(i.teacher || '')
+          if (level && [4, 8, 12].includes(savedPackageCount)) {
+            selectedPackageBySavedLevel[level] = savedPackageCount
+          }
           return
         }
         classRows.push({
@@ -475,12 +491,11 @@ export default function SchoolForm({ token }) {
         const normalized = Object.fromEntries(
           Object.entries(selectedByLevel).map(([level, activities]) => {
             const availableOptions = getActivityOptionsForLevel(level)
-            const uniqueActivities = [...new Set(activities)]
             return [
               level,
               availableOptions.length > 0
-                ? uniqueActivities.filter(activity => availableOptions.includes(activity))
-                : uniqueActivities
+                ? activities.filter(activity => availableOptions.includes(activity))
+                : activities
             ]
           })
         )
@@ -488,6 +503,9 @@ export default function SchoolForm({ token }) {
       }
       if (Object.keys(selectedStem).length > 0) {
         setSelectedStemByPlan(selectedStem)
+      }
+      if (Object.keys(selectedPackageBySavedLevel).length > 0) {
+        setSelectedPackageByLevel(selectedPackageBySavedLevel)
       }
     }
 
@@ -498,20 +516,49 @@ export default function SchoolForm({ token }) {
       setProductsById(map)
     }
 
-    if (formData.status === 'tamamlandi' || formData.status === 'onaylandi') setSubmitted(true)
+    if (formData.status === 'tamamlandi' || formData.status === 'okul_formu_guncelledi' || formData.status === 'onaylandi') setSubmitted(true)
     setLoading(false)
   }
-  const totalQty = classItems.reduce((s, i) => s + (parseInt(i.qty) || 0), 0)
+  const totalQty = getClassItemsTotalQty(classItems)
   const orderItems = preOrder?.pre_order_items || []
-  const packageSelectionConfig = getPackageSelectionConfig(orderItems, productsById)
+  const orderQtyTotal = getOrderItemsTotalQty(orderItems)
+  const qtyMismatchMessage = getOrderQtyMismatchMessage(orderItems, classItems)
+  const packageSelectionConfigs = getPackageSelectionConfigs(orderItems, productsById)
+  const packageCounts = packageSelectionConfigs.map(config => config.count)
+  const selectablePackageConfigs = packageSelectionConfigs.filter(config => [4, 8, 12].includes(config.count))
+  const selectablePackageCounts = selectablePackageConfigs.map(config => config.count)
   const stemPlanConfigs = getStemPlanConfigs(orderItems, productsById)
-  const requiredSelectionCount = [4, 8, 12].includes(packageSelectionConfig?.count || 0) ? packageSelectionConfig.count : 0
-  const isSixteenPackage = packageSelectionConfig?.count === 16
-  const shouldShowPackageSelection = requiredSelectionCount > 0
-  const shouldShowReadOnlyProductList = isSixteenPackage
+  const shouldShowPackageSelection = selectablePackageCounts.length > 0
+  const hasMultiplePackageOptions = selectablePackageCounts.length > 1
+  const shouldShowReadOnlyProductList = packageCounts.includes(16)
   const shouldShowStemSelection = stemPlanConfigs.length > 0
   const isApproved = form?.status === 'onaylandi'
   const activeLevels = [...new Set(classItems.filter(i => i.grade && parseInt(i.qty) > 0).map(i => i.grade))]
+  const getLevelPackageCount = (level) => {
+    if (!shouldShowPackageSelection) return null
+    if (!hasMultiplePackageOptions) return selectablePackageCounts[0]
+    const selectedCount = parseInt(selectedPackageByLevel[level], 10)
+    return selectablePackageCounts.includes(selectedCount) ? selectedCount : null
+  }
+  const setLevelPackageCount = (level, nextCountRaw) => {
+    const nextCount = parseInt(nextCountRaw, 10)
+    if (!selectablePackageCounts.includes(nextCount)) {
+      setSelectedPackageByLevel(prev => {
+        const next = { ...prev }
+        delete next[level]
+        return next
+      })
+      setSelectedActivitiesByLevel(prev => ({ ...prev, [level]: [] }))
+      return
+    }
+    setSelectedPackageByLevel(prev => ({ ...prev, [level]: nextCount }))
+    setSelectedActivitiesByLevel(prev => {
+      const current = prev[level] || []
+      const availableOptions = getActivityOptionsForLevel(level)
+      const validCurrent = current.filter(activity => availableOptions.includes(activity))
+      return { ...prev, [level]: validCurrent.slice(0, nextCount) }
+    })
+  }
   const getSelectedStemValue = (planKey, shipmentKey) => selectedStemByPlan[planKey]?.[shipmentKey] || ''
   const setStemSelection = (planKey, shipmentKey, activityName) => {
     setSelectedStemByPlan(prev => ({
@@ -529,15 +576,16 @@ export default function SchoolForm({ token }) {
       ? selectedActivities.filter(activity => availableOptions.includes(activity))
       : []
   }
-  const getSelectionGroupsForLevel = (level) => getSelectionGroupRules(requiredSelectionCount, getActivityOptionsForLevel(level))
-  const getSelectedActivitiesForGroup = (selectedForLevel, group) => selectedForLevel.filter(activity => group.options.includes(activity))
-  const packageSelectionInfoText = requiredSelectionCount === 8
-    ? 'Her sınıf seviyesi için ilk 8 üründen 4, ikinci 8 üründen 4 seçiniz.'
-    : requiredSelectionCount === 12
-      ? 'Her sınıf seviyesi için ilk 8 üründen 6, ikinci 8 üründen 6 seçiniz.'
-    : requiredSelectionCount === 4
-      ? 'Her sınıf seviyesi için ilk 8 üründen 2, ikinci 8 üründen 2 seçiniz.'
-      : `Her sınıf seviyesi için tam ${requiredSelectionCount} ürün seçiniz.`
+  const formatActivityListWithCounts = (activities = []) => {
+    const counts = {}
+    activities.forEach(activity => {
+      if (!activity) return
+      counts[activity] = (counts[activity] || 0) + 1
+    })
+    return Object.entries(counts).map(([activity, count]) => count > 1 ? `${activity} (x${count})` : activity)
+  }
+  const packageSelectionInfoText = getPackageInfoText(selectablePackageConfigs)
+  const packageTitleText = getPackageTitleText(packageSelectionConfigs)
   const stemSelectionSummary = stemPlanConfigs.flatMap(plan => (
     plan.shipments.map(shipment => ({
       level: `${plan.label} / ${shipment.label}`,
@@ -547,7 +595,9 @@ export default function SchoolForm({ token }) {
   const selectedActivitySummary = [
     ...activeLevels.map(level => ({
       level,
-      activities: shouldShowReadOnlyProductList ? getActivityOptionsForLevel(level) : getValidSelectedActivities(level)
+      activities: shouldShowReadOnlyProductList
+        ? getActivityOptionsForLevel(level)
+        : formatActivityListWithCounts(getValidSelectedActivities(level))
     })),
     ...stemSelectionSummary,
   ]
@@ -563,21 +613,24 @@ export default function SchoolForm({ token }) {
   const updateClassItem = (idx, field, value) => {
     setClassItems(prev => { const next = [...prev]; next[idx] = { ...next[idx], [field]: value }; return next })
   }
-  const toggleActivity = (grade, activityName) => {
+  const getActivityCount = (grade, activityName) => {
+    const selected = selectedActivitiesByLevel[grade] || []
+    return selected.filter(name => name === activityName).length
+  }
+  const setActivityCount = (grade, activityName, nextCount) => {
     setSelectedActivitiesByLevel(prev => {
       const current = prev[grade] || []
       const availableOptions = getActivityOptionsForLevel(grade)
       const validCurrent = current.filter(activity => availableOptions.includes(activity))
-      if (!current.includes(activityName) && shouldShowPackageSelection) {
-        const groups = getSelectionGroupRules(requiredSelectionCount, availableOptions)
-        const targetGroup = groups.find(group => group.options.includes(activityName))
-        if (!targetGroup) return prev
-        const selectedInTargetGroup = validCurrent.filter(activity => targetGroup.options.includes(activity))
-        if (selectedInTargetGroup.length >= targetGroup.required) return prev
-      }
-      const nextForGrade = current.includes(activityName)
-        ? current.filter(name => name !== activityName)
-        : [...current, activityName]
+      const safeNextCount = Math.max(0, parseInt(nextCount, 10) || 0)
+      const requiredSelectionsForLevel = getLevelPackageCount(grade) || 0
+      const currentCount = validCurrent.filter(name => name === activityName).length
+      const withoutCurrent = validCurrent.length - currentCount
+      const maxAllowedForActivity = Math.max(requiredSelectionsForLevel - withoutCurrent, 0)
+      const finalCount = Math.min(safeNextCount, maxAllowedForActivity)
+      const nextForGrade = validCurrent
+        .filter(name => name !== activityName)
+        .concat(Array.from({ length: finalCount }, () => activityName))
       return { ...prev, [grade]: nextForGrade }
     })
   }
@@ -595,17 +648,38 @@ export default function SchoolForm({ token }) {
     if (isApproved) { alert('Bu form bayi tarafından onaylandı, artık güncellenemez.'); return }
     const validItems = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
     if (validItems.length === 0) { alert('En az bir sınıf satırı doldurulmalıdır!'); return }
+    const invalidTeacherInfoRow = validItems.find(i =>
+      !String(i.teacher || '').trim() ||
+      !String(i.teacher_email || '').trim() ||
+      !String(i.teacher_phone || '').trim()
+    )
+    if (invalidTeacherInfoRow) {
+      alert(`${invalidTeacherInfoRow.grade || 'Seçili sınıf'} satırında öğretmen adı, mail ve telefon zorunludur!`)
+      return
+    }
+    if (qtyMismatchMessage) {
+      alert(qtyMismatchMessage)
+      return
+    }
     if (shouldShowPackageSelection) {
+      if (hasMultiplePackageOptions) {
+        const missingPackageLevel = activeLevels.find(level => !getLevelPackageCount(level))
+        if (missingPackageLevel) {
+          alert(`${missingPackageLevel} için paket tipini seçiniz.`)
+          return
+        }
+      }
       const invalidSelection = activeLevels.map(level => {
         const availableOptions = getActivityOptionsForLevel(level)
         if (availableOptions.length === 0) return null
         const selectedForLevel = getValidSelectedActivities(level)
-        const invalidGroup = getSelectionGroupRules(requiredSelectionCount, availableOptions)
-          .find(group => getSelectedActivitiesForGroup(selectedForLevel, group).length !== group.required)
-        return invalidGroup ? { level, invalidGroup } : null
+        const requiredSelectionsForLevel = getLevelPackageCount(level) || 0
+        return selectedForLevel.length !== requiredSelectionsForLevel
+          ? { level, selected: selectedForLevel.length, required: requiredSelectionsForLevel }
+          : null
       }).find(Boolean)
       if (invalidSelection) {
-        alert(`${invalidSelection.level} için ${invalidSelection.invalidGroup.label} alanında tam ${invalidSelection.invalidGroup.required} ürün seçiniz!`)
+        alert(`${invalidSelection.level} için ${invalidSelection.required} ürün seçimi zorunludur (seçili: ${invalidSelection.selected}).`)
         return
       }
     }
@@ -622,11 +696,13 @@ export default function SchoolForm({ token }) {
       }
     }
     setSaving(true)
+    const isUpdate = form?.status === 'tamamlandi' || form?.status === 'okul_formu_guncelledi'
+    const nextStatus = isUpdate ? 'okul_formu_guncelledi' : 'tamamlandi'
 
     await supabase.from('school_forms').update({
       school_name: schoolName, tax_no: taxNo, tax_office: taxOffice,
       address, contact_name: contactName, contact_phone: contactPhone,
-      contact_email: contactEmail, status: 'tamamlandi'
+      contact_email: contactEmail, status: nextStatus
     }).eq('id', form.id)
     setForm(prev => prev ? ({
       ...prev,
@@ -637,7 +713,7 @@ export default function SchoolForm({ token }) {
       contact_name: contactName,
       contact_phone: contactPhone,
       contact_email: contactEmail,
-      status: 'tamamlandi',
+      status: nextStatus,
     }) : prev)
 
     await supabase.from('school_form_items').delete().eq('form_id', form.id)
@@ -650,17 +726,35 @@ export default function SchoolForm({ token }) {
       ? activeLevels.flatMap(level => {
         const availableOptions = getActivityOptionsForLevel(level)
         if (availableOptions.length === 0) return []
-        return (selectedActivitiesByLevel[level] || [])
-          .filter(activityName => availableOptions.includes(activityName))
-          .map(activityName => ({
+        const selectedForLevel = (selectedActivitiesByLevel[level] || []).filter(activityName => availableOptions.includes(activityName))
+        const countMap = selectedForLevel.reduce((acc, activityName) => {
+          acc[activityName] = (acc[activityName] || 0) + 1
+          return acc
+        }, {})
+        return Object.entries(countMap).map(([activityName, activityCount]) => ({
             form_id: form.id,
             grade: ACTIVITY_MARKER_GRADE,
             branch: level,
             teacher: activityName,
             teacher_email: '',
             teacher_phone: '',
-            qty: 0,
+            qty: activityCount,
           }))
+      })
+      : []
+    const selectedPackageLevelRows = shouldShowPackageSelection
+      ? activeLevels.flatMap(level => {
+        const packageCount = getLevelPackageCount(level)
+        if (!packageCount) return []
+        return [{
+          form_id: form.id,
+          grade: PRODUCT_MARKER_GRADE,
+          branch: level,
+          teacher: `${packageCount}'li`,
+          teacher_email: '',
+          teacher_phone: '',
+          qty: packageCount,
+        }]
       })
       : []
     const selectedStemRows = shouldShowStemSelection
@@ -680,7 +774,7 @@ export default function SchoolForm({ token }) {
         })
       ))
       : []
-    await supabase.from('school_form_items').insert([...classRowsToSave, ...selectedPackageActivityRows, ...selectedStemRows])
+    await supabase.from('school_form_items').insert([...classRowsToSave, ...selectedPackageActivityRows, ...selectedPackageLevelRows, ...selectedStemRows])
 
     setSubmitted(true)
     setSaving(false)
@@ -754,7 +848,7 @@ export default function SchoolForm({ token }) {
             rel="noreferrer"
             style={{ color: COLORS.teal, fontSize: 14, fontWeight: 700, textDecoration: 'underline' }}
           >
-            Detaylı kazanım tablosunu buradan indirin
+            Detaylı kazanım dosyasını buradan inceleyin
           </a>
         </div>
 
@@ -764,7 +858,7 @@ export default function SchoolForm({ token }) {
             <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.teal, marginBottom: 12 }}>📦 Sipariş Özeti</div>
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
               <div><span style={{ fontSize: 11, color: '#888' }}>SEZON</span><div style={{ fontWeight: 700 }}>{preOrder.season}</div></div>
-              <div><span style={{ fontSize: 11, color: '#888' }}>TOPLAM ADET</span><div style={{ fontWeight: 700 }}>{orderItems.reduce((s, i) => s + (i.qty || 0), 0)} adet</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>TOPLAM ADET</span><div style={{ fontWeight: 700 }}>{orderQtyTotal} adet</div></div>
             </div>
             <div style={{ marginTop: 12 }}>
               {orderItems.map((item, idx) => (
@@ -775,9 +869,9 @@ export default function SchoolForm({ token }) {
             </div>
           </div>
         )}
-        {packageSelectionConfig && (
+        {packageSelectionConfigs.length > 0 && (
           <div style={{ ...S.card, borderLeft: '4px solid ' + COLORS.yellow }}>
-            <div style={{ fontSize: 14, fontWeight: 800, color: COLORS.primary, marginBottom: 6 }}>{packageSelectionConfig.count}'li Keşif Kutusu</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: COLORS.primary, marginBottom: 6 }}>{packageTitleText}</div>
             <div style={{ fontSize: 13, color: '#666' }}>
               {shouldShowPackageSelection
                 ? packageSelectionInfoText
@@ -852,13 +946,13 @@ export default function SchoolForm({ token }) {
                       <input style={{ ...S.input, textAlign: 'center', fontSize: 12, padding: '7px 8px' }} value={item.branch} onChange={e => updateClassItem(idx, 'branch', e.target.value)} placeholder="A" />
                     </td>
                     <td style={S.td}>
-                      <input style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher} onChange={e => updateClassItem(idx, 'teacher', e.target.value)} placeholder="Ad Soyad" />
+                      <input required style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher} onChange={e => updateClassItem(idx, 'teacher', e.target.value)} placeholder="Ad Soyad *" />
                     </td>
                     <td style={S.td}>
-                      <input style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher_email} onChange={e => updateClassItem(idx, 'teacher_email', e.target.value)} placeholder="mail@okul.com" />
+                      <input required type="email" style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher_email} onChange={e => updateClassItem(idx, 'teacher_email', e.target.value)} placeholder="mail@okul.com *" />
                     </td>
                     <td style={S.td}>
-                      <input style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher_phone} onChange={e => updateClassItem(idx, 'teacher_phone', e.target.value)} placeholder="0555..." />
+                      <input required style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher_phone} onChange={e => updateClassItem(idx, 'teacher_phone', e.target.value)} placeholder="0555... *" />
                     </td>
                     <td style={S.td}>
                       <input type="number" min="0" style={{ ...S.input, textAlign: 'center', fontSize: 12, padding: '7px 8px' }} value={item.qty} onChange={e => updateClassItem(idx, 'qty', e.target.value)} placeholder="0" />
@@ -878,11 +972,17 @@ export default function SchoolForm({ token }) {
               </tfoot>
             </table>
           </div>
+          <div style={{ marginTop: 10, fontSize: 12, color: qtyMismatchMessage ? COLORS.orange : COLORS.green, fontWeight: 700 }}>
+            Sipariş adedi: {orderQtyTotal} • Form adedi: {totalQty}
+          </div>
+          {qtyMismatchMessage && (
+            <div style={{ marginTop: 6, fontSize: 12, color: COLORS.orange }}>{qtyMismatchMessage}</div>
+          )}
         </div>
 
         {shouldShowPackageSelection && (
           <div style={S.card}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>{requiredSelectionCount}'li Keşif Kutusu Ürün Listesi</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>{packageTitleText} Ürün Listesi</div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 14 }}>{packageSelectionInfoText}</div>
             {activeLevels.length === 0 ? (
               <div style={{ fontSize: 13, color: '#999' }}>Önce sınıf seviyelerine adet giriniz.</div>
@@ -891,42 +991,60 @@ export default function SchoolForm({ token }) {
                 {activeLevels.map(level => {
                   const availableOptions = getActivityOptionsForLevel(level)
                   const selectedForLevel = getValidSelectedActivities(level)
-                  const selectionGroups = getSelectionGroupsForLevel(level)
-                  const totalRequiredForLevel = selectionGroups.reduce((sum, group) => sum + group.required, 0)
+                  const requiredSelectionsForLevel = getLevelPackageCount(level)
+                  const canSelectActivities = Boolean(requiredSelectionsForLevel)
                   return (
                     <div key={level} style={{ border: '1px solid #ece6ff', borderRadius: 12, padding: 12, background: '#fff' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                      <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexDirection: isMobile ? 'column' : 'row' }}>
                         <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.primary }}>{level}</div>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: selectedForLevel.length === totalRequiredForLevel ? COLORS.green : COLORS.orange }}>
-                          {selectedForLevel.length}/{totalRequiredForLevel} seçildi
+                        <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
+                          {hasMultiplePackageOptions && (
+                            <select
+                              style={{ ...S.select, width: isMobile ? '100%' : 140, padding: '6px 8px', fontSize: 12 }}
+                              value={requiredSelectionsForLevel || ''}
+                              onChange={e => setLevelPackageCount(level, e.target.value)}
+                            >
+                              <option value="">Paket Seç</option>
+                              {selectablePackageCounts.map(count => (
+                                <option key={`package-${level}-${count}`} value={count}>{count}'li</option>
+                              ))}
+                            </select>
+                          )}
+                          <div style={{ fontSize: 12, fontWeight: 700, color: canSelectActivities && selectedForLevel.length === requiredSelectionsForLevel ? COLORS.green : COLORS.orange }}>
+                            {canSelectActivities ? `${selectedForLevel.length}/${requiredSelectionsForLevel} seçildi` : 'Paket seçiniz'}
+                          </div>
                         </div>
                       </div>
                       {availableOptions.length === 0 ? (
                         <div style={{ fontSize: 12, color: '#999' }}>Bu seviye için etkinlik listesi bulunamadı.</div>
+                      ) : !canSelectActivities ? (
+                        <div style={{ fontSize: 12, color: '#999' }}>Bu seviyede ürün seçimine başlamadan önce paket tipi seçiniz.</div>
                       ) : (
-                        <div style={{ display: 'grid', gap: 10 }}>
-                          {selectionGroups.map(group => {
-                            const selectedInGroup = getSelectedActivitiesForGroup(selectedForLevel, group)
-                            const limitReached = selectedInGroup.length >= group.required
+                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
+                          {availableOptions.map(activityName => {
+                            const activityCount = getActivityCount(level, activityName)
+                            const canIncrease = selectedForLevel.length < requiredSelectionsForLevel
                             return (
-                              <div key={`${level}-${group.key}`} style={{ border: '1px solid #f0e8ff', borderRadius: 10, padding: 10 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                                  <div style={{ fontSize: 12, fontWeight: 800, color: COLORS.primary }}>{group.label}</div>
-                                  <div style={{ fontSize: 12, fontWeight: 700, color: selectedInGroup.length === group.required ? COLORS.green : COLORS.orange }}>
-                                    {selectedInGroup.length}/{group.required}
-                                  </div>
-                                </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
-                                  {group.options.map(activityName => {
-                                    const checked = selectedForLevel.includes(activityName)
-                                    const disabled = !checked && limitReached
-                                    return (
-                                      <label key={`${level}-${group.key}-${activityName}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 8, background: checked ? '#f7f3ff' : '#fafafa', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 }}>
-                                        <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleActivity(level, activityName)} />
-                                        <span style={{ fontSize: 12, color: '#333', fontWeight: 600 }}>{activityName}</span>
-                                      </label>
-                                    )
-                                  })}
+                              <div key={`${level}-${activityName}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 8px', borderRadius: 8, background: activityCount > 0 ? '#f7f3ff' : '#fafafa' }}>
+                                <span style={{ fontSize: 12, color: '#333', fontWeight: 600, flex: 1 }}>{activityName}</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <button
+                                    type="button"
+                                    style={{ ...S.btn('#9ca3af'), padding: '2px 8px', fontSize: 12 }}
+                                    onClick={() => setActivityCount(level, activityName, activityCount - 1)}
+                                    disabled={activityCount <= 0}
+                                  >
+                                    -
+                                  </button>
+                                  <span style={{ minWidth: 20, textAlign: 'center', fontSize: 12, fontWeight: 700 }}>{activityCount}</span>
+                                  <button
+                                    type="button"
+                                    style={{ ...S.btn(COLORS.teal), padding: '2px 8px', fontSize: 12 }}
+                                    onClick={() => setActivityCount(level, activityName, activityCount + 1)}
+                                    disabled={!canIncrease}
+                                  >
+                                    +
+                                  </button>
                                 </div>
                               </div>
                             )
@@ -950,31 +1068,16 @@ export default function SchoolForm({ token }) {
               <div style={{ display: 'grid', gap: 10 }}>
                 {activeLevels.map(level => {
                   const availableOptions = getActivityOptionsForLevel(level)
-                  const firstGroup = availableOptions.slice(0, 8)
-                  const secondGroup = availableOptions.slice(8, 16)
                   return (
                     <div key={level} style={{ border: '1px solid #ece6ff', borderRadius: 12, padding: 12, background: '#fff' }}>
                       <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.primary, marginBottom: 10 }}>{level}</div>
                       {availableOptions.length === 0 ? (
                         <div style={{ fontSize: 12, color: '#999' }}>Bu seviye için etkinlik listesi bulunamadı.</div>
                       ) : (
-                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 10 }}>
-                          <div style={{ border: '1px solid #f0e8ff', borderRadius: 10, padding: 10 }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: COLORS.primary, marginBottom: 8 }}>İlk 8 Ürün</div>
-                            <div style={{ display: 'grid', gap: 6 }}>
-                              {firstGroup.map(activityName => (
-                                <div key={`${level}-readonly-first-${activityName}`} style={{ fontSize: 12, color: '#333', fontWeight: 600, padding: '6px 8px', borderRadius: 8, background: '#fafafa' }}>{activityName}</div>
-                              ))}
-                            </div>
-                          </div>
-                          <div style={{ border: '1px solid #f0e8ff', borderRadius: 10, padding: 10 }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: COLORS.primary, marginBottom: 8 }}>İkinci 8 Ürün</div>
-                            <div style={{ display: 'grid', gap: 6 }}>
-                              {secondGroup.map(activityName => (
-                                <div key={`${level}-readonly-second-${activityName}`} style={{ fontSize: 12, color: '#333', fontWeight: 600, padding: '6px 8px', borderRadius: 8, background: '#fafafa' }}>{activityName}</div>
-                              ))}
-                            </div>
-                          </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
+                          {availableOptions.map(activityName => (
+                            <div key={`${level}-readonly-${activityName}`} style={{ fontSize: 12, color: '#333', fontWeight: 600, padding: '6px 8px', borderRadius: 8, background: '#fafafa' }}>{activityName}</div>
+                          ))}
                         </div>
                       )}
                     </div>
