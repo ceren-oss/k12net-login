@@ -1,0 +1,28 @@
+Konu: Bayi Portalı Güncellemesi Yayına Alındı (Prod Doğrulandı)
+
+Merhaba,
+
+Bayi Portalı için planlanan güncellemeler canlıya alınmış ve production üzerinde uçtan uca smoke test ile doğrulanmıştır.
+
+Öne çıkan tamamlanan başlıklar:
+- Admin ürün düzenleme akışı aktif.
+- Dashboard’dan “Son Admin İşlemleri” kaldırıldı.
+- Çek silme akışı eklendi.
+- Muhasebe rolü için kısıtlı admin erişimi uygulandı.
+- Ön sipariş ve okul formu akışında 8’li + 4’lü sınıf bazlı seçim desteği eklendi.
+- Form adet doğrulaması (sipariş adedinden az olamaz) aktif.
+- Bayi ön sipariş/sipariş detayında kargo bedeli görünürlüğü düzeltildi.
+- Miniskop Merkez için esnek fiyat girişi aktif.
+- Runtime hata düzeltmesi tamamlandı.
+
+Doğrulama sonucu:
+- Production smoke test: 11/11 kritik adım başarılı.
+- Uncaught runtime page error tespit edilmedi.
+
+Canlı adres:
+https://bayi.kesifkutusu.com.tr
+
+Detaylı teknik kayıt:
+- CHANGELOG.md
+
+Bilginize.
