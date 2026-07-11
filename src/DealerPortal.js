@@ -14,7 +14,9 @@ const COLORS = {
 const fmt = (n) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(n || 0)
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('tr-TR') : '-'
 const VAT_RATE = 0.2
-const getVatAmount = (amount) => (amount || 0) * VAT_RATE
+const VAT_TAXABLE_PORTION = 1 / 3
+const STUDENT_CARGO_FEE = 100
+const getVatAmount = (amount) => (parseFloat(amount) || 0) * VAT_RATE * VAT_TAXABLE_PORTION
 const getAmountWithVat = (amount) => (amount || 0) + getVatAmount(amount)
 
 const S = {
@@ -66,16 +68,21 @@ const getPreOrderSubtotal = (preOrder) => (preOrder?.pre_order_items || []).redu
   (sum, item) => sum + ((parseInt(item?.qty, 10) || 0) * parseAmount(item?.unit_price)),
   0
 )
-const getPreOrderCargoFee = (preOrder) => parseAmount(preOrder?.cargo_fee)
-const getPreOrderTotalWithCargo = (preOrder) => getPreOrderSubtotal(preOrder) + getPreOrderCargoFee(preOrder)
-const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
-const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
+const getAutoCargoFeeByStudentQty = (studentQty) => (parseInt(studentQty, 10) || 0) * STUDENT_CARGO_FEE
+const getTeacherSetCountFromRows = (rows = []) => {
+  const validRows = (rows || []).filter(row => (parseInt(row?.qty, 10) || 0) > 0)
+  const uniqueTeacherCount = new Set(
+    validRows.map(row => String(row?.teacher || '').trim()).filter(Boolean)
+  ).size
+  return uniqueTeacherCount > 0 ? uniqueTeacherCount : validRows.length
+}
 const sanitizeForecastRows = (rows = []) => (rows || [])
   .map(row => ({
     grade: row?.grade || FORECAST_GRADES[0],
     qty: parseInt(row?.qty, 10) || 0,
   }))
   .filter(row => row.grade && row.qty > 0)
+const getForecastQtyTotal = (rows = []) => sanitizeForecastRows(rows).reduce((sum, row) => sum + (row.qty || 0), 0)
 const splitPreOrderNote = (rawNote) => {
   const note = String(rawNote || '')
   const markerIndex = note.indexOf(PREORDER_FORECAST_MARKER)
@@ -96,6 +103,17 @@ const buildPreOrderNote = (rawNote, forecastRows = []) => {
   const payload = `${PREORDER_FORECAST_MARKER}${JSON.stringify(normalizedRows)}`
   return userNote ? `${userNote}\n\n${payload}` : payload
 }
+const getForecastRowsFromPreOrder = (preOrder) => splitPreOrderNote(preOrder?.note).forecastRows
+const getPreOrderForecastQty = (preOrder) => getForecastQtyTotal(getForecastRowsFromPreOrder(preOrder))
+const getPreOrderCargoFee = (preOrder) => {
+  const explicitCargoFee = parseAmount(preOrder?.cargo_fee)
+  if (explicitCargoFee > 0) return explicitCargoFee
+  return getAutoCargoFeeByStudentQty(getPreOrderForecastQty(preOrder))
+}
+const getPreOrderTotalWithCargo = (preOrder) => getPreOrderSubtotal(preOrder) + getPreOrderCargoFee(preOrder)
+const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
+const getOrderTeacherSetCount = (order) => parseInt(order?.free_qty, 10) || 0
+const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
 
 export default function DealerPortal({ dealer, onLogout }) {
   const [page, setPage] = useState('dashboard')
@@ -235,16 +253,6 @@ export default function DealerPortal({ dealer, onLogout }) {
     const items = po?.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-
-    await supabase.from('orders').insert([{
-      id: orderId, dealer_id: dealer.id, school_name: sf.school_name,
-      season: po?.season, total, invoice_status: 'kesilmedi',
-      dia_status: false, cargo_status: 'faturalanmadi', status: 'beklemede',
-      note: 'Okul formu ile oluşturuldu'
-    }])
-    for (const item of items) {
-      await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
-    }
     const schoolFormItems = sf?.school_form_items || []
     const classRows = schoolFormItems
       .filter(item => item.grade && item.grade !== ACTIVITY_MARKER_GRADE && item.grade !== PRODUCT_MARKER_GRADE && parseInt(item.qty) > 0)
@@ -255,6 +263,20 @@ export default function DealerPortal({ dealer, onLogout }) {
         teacher: item.teacher || '',
         qty: parseInt(item.qty) || 0,
       }))
+    const studentQtyTotal = classRows.reduce((sum, row) => sum + (row.qty || 0), 0)
+    const autoCargoFee = getAutoCargoFeeByStudentQty(studentQtyTotal)
+    const autoFreeQty = getTeacherSetCountFromRows(classRows)
+
+    await supabase.from('orders').insert([{
+      id: orderId, dealer_id: dealer.id, school_name: sf.school_name,
+      season: po?.season, total, invoice_status: 'kesilmedi',
+      dia_status: false, cargo_status: 'faturalanmadi', status: 'beklemede',
+      cargo_fee: autoCargoFee, free_qty: autoFreeQty,
+      note: 'Okul formu ile oluşturuldu'
+    }])
+    for (const item of items) {
+      await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
+    }
     const activityRows = [...new Set(
       schoolFormItems
         .filter(item => item.grade === ACTIVITY_MARKER_GRADE && item.branch && String(item.teacher || '').trim())
@@ -275,7 +297,7 @@ export default function DealerPortal({ dealer, onLogout }) {
     }
     const { data: freshDealer } = await supabase.from('dealers').select('balance').eq('id', dealer.id).single()
     await supabase.from('dealers').update({ balance: (freshDealer?.balance || 0) - total }).eq('id', dealer.id)
-    await supabase.from('pre_orders').update({ status: 'siparise_donustu' }).eq('id', po.id)
+    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: autoCargoFee }).eq('id', po.id)
     await supabase.from('school_forms').update({ status: 'onaylandi' }).eq('id', sf.id)
     loadAll()
     alert('Sipariş oluşturuldu: ' + orderId)
@@ -398,6 +420,13 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
 
   const updateItem = (idx, field, value) => {
     setItems(prev => {
+      if (field === 'product_id' && value) {
+        const hasDuplicate = prev.some((row, rowIdx) => rowIdx !== idx && String(row.product_id || '') === String(value))
+        if (hasDuplicate) {
+          alert('Aynı ürün birden fazla satırda seçilemez.')
+          return prev
+        }
+      }
       const next = [...prev]
       next[idx] = { ...next[idx], [field]: value }
       if (field === 'product_id') next[idx].unit_price = getPrice(parseInt(value, 10))
@@ -423,11 +452,23 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   const totalWithVat = getAmountWithVat(total)
   const orderQtyTotal = filledItems.reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
   const forecastQtyTotal = validForecastRows.reduce((sum, row) => sum + (row.qty || 0), 0)
+  const hasDuplicateProductSelection = new Set(filledItems.map(item => String(item.product_id))).size !== filledItems.length
+  const isForecastQtyMismatch = forecastQtyTotal !== orderQtyTotal
+  const estimatedCargoFee = getAutoCargoFeeByStudentQty(orderQtyTotal)
+  const estimatedFreeTeacherSetQty = validForecastRows.length
 
   const save = async () => {
     if (!schoolName || filledItems.length === 0) return
     if (validForecastRows.length === 0) {
       alert('Ön görülen sınıf dağılımı zorunludur.')
+      return
+    }
+    if (hasDuplicateProductSelection) {
+      alert('Aynı ürün birden fazla satırda seçilemez.')
+      return
+    }
+    if (isForecastQtyMismatch) {
+      alert(`Sipariş adedi (${orderQtyTotal}) ile ön görülen sınıf toplamı (${forecastQtyTotal}) eşit olmalıdır.`)
       return
     }
     setLoading(true)
@@ -504,8 +545,10 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         </div>
         <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: '#f8f4ff', display: 'grid', gap: 6 }}>
           <div style={{ fontSize: 12, color: '#666' }}>KDV Hariç Toplam: <strong style={{ color: COLORS.primary }}>{fmt(total)}</strong></div>
-          <div style={{ fontSize: 12, color: '#666' }}>KDV (%20): <strong style={{ color: COLORS.orange }}>{fmt(totalVat)}</strong></div>
+          <div style={{ fontSize: 12, color: '#666' }}>KDV (1/3'e %20): <strong style={{ color: COLORS.orange }}>{fmt(totalVat)}</strong></div>
           <div style={{ fontSize: 13, color: '#333', fontWeight: 800 }}>KDV Dahil Toplam: <span style={{ color: COLORS.green }}>{fmt(totalWithVat)}</span></div>
+          <div style={{ fontSize: 12, color: '#666' }}>Tahmini Kargo (öğrenci başı {fmt(STUDENT_CARGO_FEE)}): <strong style={{ color: COLORS.teal }}>{fmt(estimatedCargoFee)}</strong></div>
+          <div style={{ fontSize: 12, color: '#666' }}>Tahmini Ücretsiz Öğretmen Seti: <strong style={{ color: COLORS.primary }}>{estimatedFreeTeacherSetQty}</strong></div>
         </div>
       </div>
       <div style={S.card}>
@@ -537,13 +580,23 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         <div style={{ marginTop: 10, fontSize: 12, color: forecastQtyTotal === orderQtyTotal ? COLORS.green : COLORS.orange }}>
           Sipariş adedi: <strong>{orderQtyTotal}</strong> • Ön görülen sınıf toplamı: <strong>{forecastQtyTotal}</strong>
         </div>
+        {isForecastQtyMismatch && (
+          <div style={{ marginTop: 8, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>
+            Ön sipariş göndermek için sipariş adedi ile ön görülen sınıf toplamı eşit olmalıdır.
+          </div>
+        )}
+        {hasDuplicateProductSelection && (
+          <div style={{ marginTop: 6, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>
+            Aynı ürün birden fazla satırda seçilemez.
+          </div>
+        )}
       </div>
       <div style={S.card}>
         <label style={S.label}>Not</label>
         <input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Not..." />
       </div>
       <div style={{ display: 'flex', justifyContent: isMobile ? 'stretch' : 'flex-end' }}>
-        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || filledItems.length === 0 || validForecastRows.length === 0}>
+        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || filledItems.length === 0 || validForecastRows.length === 0 || hasDuplicateProductSelection || isForecastQtyMismatch}>
           {loading ? 'Gönderiliyor...' : 'Ön Sipariş Gönder'}
         </button>
       </div>
@@ -588,6 +641,17 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const detailFormActivitiesByLevel = toActivityDisplay(getFormActivitiesByLevel(detailLinkedForm))
   const detailNoteData = splitPreOrderNote(detail?.note || '')
   const detailForecastRows = detailNoteData.forecastRows
+  const detailForecastQtyTotal = detailForecastRows.reduce((sum, row) => sum + (row.qty || 0), 0)
+  const detailStudentQtyTotal = detailFormClassRows.length > 0
+    ? detailFormClassRows.reduce((sum, row) => sum + (parseInt(row.qty, 10) || 0), 0)
+    : detailForecastQtyTotal
+  const detailTeacherSetQty = detailFormClassRows.length > 0
+    ? getTeacherSetCountFromRows(detailFormClassRows)
+    : detailForecastRows.length
+  const detailCargoFee = parseAmount(detail?.cargo_fee) > 0
+    ? parseAmount(detail?.cargo_fee)
+    : getAutoCargoFeeByStudentQty(detailStudentQtyTotal)
+  const detailTotalWithCargo = getPreOrderSubtotal(detail) + detailCargoFee
   const downloadApprovedForm = (schoolForm) => {
     downloadSchoolFormReport({
       form: schoolForm,
@@ -655,6 +719,13 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   }
   const updateEditItem = (idx, field, value) => {
     setEditItems(prev => {
+      if (field === 'product_id' && value) {
+        const hasDuplicate = prev.some((row, rowIdx) => rowIdx !== idx && String(row.product_id || '') === String(value))
+        if (hasDuplicate) {
+          alert('Aynı ürün birden fazla satırda seçilemez.')
+          return prev
+        }
+      }
       const next = [...prev]
       next[idx] = { ...next[idx], [field]: value }
       if (field === 'product_id') next[idx].unit_price = getPrice(parseInt(value))
@@ -683,6 +754,8 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const editTotal = filledEditItems.reduce((s, i) => s + ((parseInt(i.qty) || 0) * (i.unit_price || 0)), 0)
   const editOrderQtyTotal = filledEditItems.reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
   const editForecastQtyTotal = validEditClassForecast.reduce((sum, row) => sum + (row.qty || 0), 0)
+  const hasDuplicateEditProducts = new Set(filledEditItems.map(item => String(item.product_id))).size !== filledEditItems.length
+  const isEditForecastMismatch = editForecastQtyTotal !== editOrderQtyTotal
   const saveEditedPreOrder = async () => {
     if (!editingPreOrder) return
     if (!editForm.school_name || filledEditItems.length === 0) {
@@ -691,6 +764,14 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     }
     if (validEditClassForecast.length === 0) {
       alert('Ön görülen sınıf dağılımı zorunludur.')
+      return
+    }
+    if (hasDuplicateEditProducts) {
+      alert('Aynı ürün birden fazla satırda seçilemez.')
+      return
+    }
+    if (isEditForecastMismatch) {
+      alert(`Sipariş adedi (${editOrderQtyTotal}) ile ön görülen sınıf toplamı (${editForecastQtyTotal}) eşit olmalıdır.`)
       return
     }
     setEditSaving(true)
@@ -840,7 +921,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               <td colSpan={3} style={S.td}></td>
             </tr>
             <tr style={{ background: '#f8f4ff' }}>
-              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.green }}>TOPLAM (KDV Dahil):</td>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.green }}>TOPLAM (KDV Dahil / 1/3'e %20):</td>
               <td style={{ ...S.td, fontWeight: 800, color: COLORS.green }}><strong>{fmt(filteredTotalWithVat)}</strong></td>
               <td colSpan={3} style={S.td}></td>
             </tr>
@@ -967,6 +1048,16 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               <div style={{ marginTop: 8, fontSize: 12, color: editForecastQtyTotal === editOrderQtyTotal ? COLORS.green : COLORS.orange }}>
                 Sipariş adedi: <strong>{editOrderQtyTotal}</strong> • Ön görülen sınıf toplamı: <strong>{editForecastQtyTotal}</strong>
               </div>
+              {isEditForecastMismatch && (
+                <div style={{ marginTop: 6, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>
+                  Kaydetmek için sipariş adedi ile ön görülen sınıf toplamı eşit olmalıdır.
+                </div>
+              )}
+              {hasDuplicateEditProducts && (
+                <div style={{ marginTop: 6, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>
+                  Aynı ürün birden fazla satırda seçilemez.
+                </div>
+              )}
             </div>
             <div style={{ marginBottom: 16 }}>
               <label style={S.label}>Not</label>
@@ -974,7 +1065,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button style={S.btn('#9ca3af')} onClick={() => { setEditModal(false); setEditingPreOrder(null) }} disabled={editSaving}>Vazgeç</button>
-              <button style={S.btn(COLORS.primary)} onClick={saveEditedPreOrder} disabled={editSaving}>{editSaving ? 'Kaydediliyor...' : 'Kaydet'}</button>
+              <button style={S.btn(COLORS.primary)} onClick={saveEditedPreOrder} disabled={editSaving || hasDuplicateEditProducts || isEditForecastMismatch}>{editSaving ? 'Kaydediliyor...' : 'Kaydet'}</button>
             </div>
           </div>
         </div>
@@ -1009,12 +1100,16 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 <strong>{fmt(getPreOrderSubtotal(detail))}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
-                <span>Kargo Bedeli</span>
-                <strong>{fmt(getPreOrderCargoFee(detail))}</strong>
+                <span>Kargo Bedeli (öğrenci başı {fmt(STUDENT_CARGO_FEE)})</span>
+                <strong>{fmt(detailCargoFee)}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                <span>Ücretsiz Öğretmen Seti</span>
+                <strong>{detailTeacherSetQty}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
                 <span>Kargo Dahil Toplam</span>
-                <span>{fmt(getPreOrderTotalWithCargo(detail))}</span>
+                <span>{fmt(detailTotalWithCargo)}</span>
               </div>
               {detailNoteData.userNote && (
                 <div style={{ marginTop: 10, fontSize: 12, color: '#444' }}>
@@ -1197,12 +1292,12 @@ function Orders({ orders, products, isMobile }) {
     <div>
       <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Siparişlerim</h2>
       <div style={S.card}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
           <thead><tr>
-            <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Ara Toplam</th><th style={S.th}>Kargo</th><th style={S.th}>Kargo Dahil Toplam</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
+            <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Ara Toplam</th><th style={S.th}>Kargo</th><th style={S.th}>Ücretsiz Set</th><th style={S.th}>Kargo Dahil Toplam</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
           </tr></thead>
           <tbody>{orders.length === 0 ? (
-            <tr><td colSpan={10} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Henüz sipariş yok</td></tr>
+            <tr><td colSpan={11} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Henüz sipariş yok</td></tr>
           ) : orders.map(o => (
             <tr key={o.id}>
               <td style={S.td}><strong style={{ color: COLORS.primary }}>{o.id}</strong></td>
@@ -1210,6 +1305,7 @@ function Orders({ orders, products, isMobile }) {
               <td style={S.td}>{o.season}</td>
               <td style={S.td}><strong>{fmt(o.total)}</strong></td>
               <td style={S.td}>{fmt(getOrderCargoFee(o))}</td>
+              <td style={S.td}>{getOrderTeacherSetCount(o)}</td>
               <td style={S.td}><strong>{fmt(getOrderTotalWithCargo(o))}</strong></td>
               <td style={S.td}><span style={S.badge(STATUS_META[o.status]?.color || '#aaa')}>{STATUS_META[o.status]?.label || (o.status || '-')}</span></td>
               <td style={S.td}><span style={S.badge(o.invoice_status === 'kesildi' ? COLORS.green : COLORS.orange)}>{o.invoice_status}</span></td>
@@ -1261,6 +1357,10 @@ function Orders({ orders, products, isMobile }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
                     <span>Kargo Bedeli</span>
                     <strong>{fmt(getOrderCargoFee(detail))}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                    <span>Ücretsiz Öğretmen Seti</span>
+                    <strong>{getOrderTeacherSetCount(detail)}</strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
                     <span>Kargo Dahil Toplam</span>
