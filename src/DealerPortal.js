@@ -71,10 +71,8 @@ const getPreOrderSubtotal = (preOrder) => (preOrder?.pre_order_items || []).redu
 const getAutoCargoFeeByStudentQty = (studentQty) => (parseInt(studentQty, 10) || 0) * STUDENT_CARGO_FEE
 const getTeacherSetCountFromRows = (rows = []) => {
   const validRows = (rows || []).filter(row => (parseInt(row?.qty, 10) || 0) > 0)
-  const uniqueTeacherCount = new Set(
-    validRows.map(row => String(row?.teacher || '').trim()).filter(Boolean)
-  ).size
-  return uniqueTeacherCount > 0 ? uniqueTeacherCount : validRows.length
+  const teacherRowsCount = validRows.filter(row => String(row?.teacher || '').trim()).length
+  return teacherRowsCount > 0 ? teacherRowsCount : validRows.length
 }
 const sanitizeForecastRows = (rows = []) => (rows || [])
   .map(row => ({
@@ -114,6 +112,158 @@ const getPreOrderTotalWithCargo = (preOrder) => getPreOrderSubtotal(preOrder) + 
 const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
 const getOrderTeacherSetCount = (order) => parseInt(order?.free_qty, 10) || 0
 const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
+const normalizeImportText = (value) => String(value || '')
+  .toLocaleLowerCase('tr-TR')
+  .replace(/ı/g, 'i')
+  .replace(/ğ/g, 'g')
+  .replace(/ü/g, 'u')
+  .replace(/ş/g, 's')
+  .replace(/ö/g, 'o')
+  .replace(/ç/g, 'c')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+const parseExcelQty = (value) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0
+  const normalized = String(value || '').replace(/\./g, '').replace(',', '.')
+  const parsed = parseFloat(normalized.replace(/[^0-9.-]/g, ''))
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.round(parsed))
+}
+const getExcelLabelValue = (rows = [], labels = []) => {
+  const normalizedLabels = labels.map(normalizeImportText).filter(Boolean)
+  for (const row of rows) {
+    for (let idx = 0; idx < row.length; idx++) {
+      const normalizedCell = normalizeImportText(row[idx])
+      if (!normalizedCell) continue
+      if (!normalizedLabels.some(label => normalizedCell.includes(label))) continue
+      for (let valueIdx = idx + 1; valueIdx < row.length; valueIdx++) {
+        const candidate = String(row[valueIdx] || '').trim()
+        if (candidate) return candidate
+      }
+    }
+  }
+  return ''
+}
+const findExcelHeader = (rows = []) => {
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex] || []
+    const normalizedRow = row.map(normalizeImportText)
+    const classIndex = normalizedRow.findIndex(cell => cell.includes('sinif'))
+    const productIndex = normalizedRow.findIndex(cell => cell.includes('urun') && (cell.includes('adi') || cell === 'urun'))
+    const qtyCandidates = normalizedRow
+      .map((cell, idx) => (cell.includes('adet') || cell.includes('miktar')) ? idx : -1)
+      .filter(idx => idx >= 0)
+    if (classIndex < 0 || productIndex < 0 || qtyCandidates.length === 0) continue
+    const qtyIndex = qtyCandidates.find(idx => normalizedRow[idx].includes('siparis')) ?? qtyCandidates[0]
+    return { rowIndex, classIndex, productIndex, qtyIndex }
+  }
+  return null
+}
+const mapExcelGrade = (value) => {
+  const normalized = normalizeImportText(value)
+  if (!normalized) return null
+  if (normalized.includes('okul oncesi')) return '5-6 Yaş'
+  if (normalized.includes('4 yas')) return '4 Yaş'
+  if (normalized.includes('5 6 yas') || normalized.includes('5-6')) return '5-6 Yaş'
+  const gradeMatch = normalized.match(/([1-8])\s*\.?\s*sinif/)
+  if (gradeMatch) return `${gradeMatch[1]}. Sınıf`
+  return null
+}
+const findProductByExcelName = (excelProductName, products = []) => {
+  const normalizedTarget = normalizeImportText(excelProductName)
+  if (!normalizedTarget) return null
+  const prepared = products
+    .map(product => ({ product, normalized: normalizeImportText(product?.name) }))
+    .filter(item => item.normalized)
+
+  const exactMatch = prepared.find(item => item.normalized === normalizedTarget)
+  if (exactMatch) return exactMatch.product
+
+  const includeMatch = prepared.find(item => item.normalized.includes(normalizedTarget) || normalizedTarget.includes(item.normalized))
+  if (includeMatch) return includeMatch.product
+
+  const targetTokens = normalizedTarget.split(' ').filter(token => token.length > 2)
+  if (targetTokens.length === 0) return null
+
+  let best = null
+  for (const item of prepared) {
+    const candidateTokens = item.normalized.split(' ').filter(token => token.length > 2)
+    const overlap = targetTokens.filter(token => candidateTokens.includes(token)).length
+    if (!best || overlap > best.overlap) best = { product: item.product, overlap }
+  }
+
+  const requiredOverlap = targetTokens.length === 1 ? 1 : Math.min(targetTokens.length, 2)
+  if (best && best.overlap >= requiredOverlap) return best.product
+  return null
+}
+const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
+  const header = findExcelHeader(rows)
+  if (!header) throw new Error('Excel içinde "Sınıf / Ürün Adı / Sipariş Adedi" başlıkları bulunamadı.')
+
+  const schoolName = getExcelLabelValue(rows.slice(0, header.rowIndex + 1), ['kurum adi', 'okul adi'])
+  const address = getExcelLabelValue(rows.slice(0, header.rowIndex + 1), ['adres bilgisi', 'adres'])
+
+  const productDemandMap = new Map()
+  const gradeQtyMap = new Map()
+  let sourceLineCount = 0
+
+  for (let rowIndex = header.rowIndex + 1; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex] || []
+    const classCell = String(row[header.classIndex] || '').trim()
+    const productCell = String(row[header.productIndex] || '').trim()
+    const qty = parseExcelQty(row[header.qtyIndex])
+    const classNormalized = normalizeImportText(classCell)
+
+    if (classNormalized.includes('genel toplam')) break
+    if (!classCell && !productCell && qty === 0) continue
+    if (!productCell || qty <= 0) continue
+
+    sourceLineCount += 1
+    const productKey = normalizeImportText(productCell) || `${productCell}-${rowIndex}`
+    const currentProduct = productDemandMap.get(productKey) || { label: productCell, qty: 0 }
+    currentProduct.qty += qty
+    productDemandMap.set(productKey, currentProduct)
+
+    const mappedGrade = mapExcelGrade(classCell)
+    if (mappedGrade) {
+      const previousQty = gradeQtyMap.get(mappedGrade) || 0
+      if (previousQty === 0) gradeQtyMap.set(mappedGrade, qty)
+      else if (previousQty !== qty) gradeQtyMap.set(mappedGrade, previousQty + qty)
+    }
+  }
+
+  if (productDemandMap.size === 0) throw new Error('Excelde geçerli ürün/adet satırı bulunamadı.')
+
+  const unresolvedProducts = []
+  const itemMap = new Map()
+  for (const demand of productDemandMap.values()) {
+    const matchedProduct = findProductByExcelName(demand.label, products)
+    if (!matchedProduct) {
+      unresolvedProducts.push(`${demand.label} (adet: ${demand.qty})`)
+      continue
+    }
+    const current = itemMap.get(matchedProduct.id) || {
+      product_id: String(matchedProduct.id),
+      qty: 0,
+      unit_price: parseAmount(getPrice(matchedProduct.id)),
+    }
+    current.qty += demand.qty
+    itemMap.set(matchedProduct.id, current)
+  }
+
+  const items = Array.from(itemMap.values())
+    .map(item => ({ ...item, qty: String(item.qty) }))
+    .sort((a, b) => parseInt(a.product_id, 10) - parseInt(b.product_id, 10))
+  const classForecastRows = FORECAST_GRADES
+    .map(grade => ({ grade, qty: gradeQtyMap.get(grade) || 0 }))
+    .filter(row => row.qty > 0)
+    .map(row => ({ grade: row.grade, qty: String(row.qty) }))
+  const orderQtyTotal = items.reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
+  const forecastQtyTotal = classForecastRows.reduce((sum, row) => sum + (parseInt(row.qty, 10) || 0), 0)
+
+  return { schoolName, address, items, classForecastRows, unresolvedProducts, sourceLineCount, orderQtyTotal, forecastQtyTotal }
+}
 
 export default function DealerPortal({ dealer, onLogout }) {
   const [page, setPage] = useState('dashboard')
@@ -417,6 +567,9 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   const [classForecastRows, setClassForecastRows] = useState([{ grade: '1. Sınıf', qty: '' }])
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [excelImportLoading, setExcelImportLoading] = useState(false)
+  const [excelImportError, setExcelImportError] = useState('')
+  const [excelImportSummary, setExcelImportSummary] = useState(null)
 
   const updateItem = (idx, field, value) => {
     setItems(prev => {
@@ -456,6 +609,57 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   const isForecastQtyMismatch = forecastQtyTotal !== orderQtyTotal
   const estimatedCargoFee = getAutoCargoFeeByStudentQty(orderQtyTotal)
   const estimatedFreeTeacherSetQty = validForecastRows.length
+  const handleExcelImport = async (event) => {
+    const selectedFile = event.target.files?.[0]
+    event.target.value = ''
+    if (!selectedFile) return
+    if (products.length === 0) {
+      setExcelImportError('Ürün listesi henüz yüklenmedi. Lütfen tekrar deneyin.')
+      return
+    }
+
+    setExcelImportLoading(true)
+    setExcelImportError('')
+    setExcelImportSummary(null)
+
+    try {
+      const xlsxModule = await import('xlsx')
+      const XLSX = xlsxModule?.default && typeof xlsxModule.default.read === 'function' ? xlsxModule.default : xlsxModule
+      const workbook = XLSX.read(await selectedFile.arrayBuffer(), { type: 'array', cellText: true, cellDates: false })
+      const firstSheetName = workbook.SheetNames?.[0]
+      if (!firstSheetName) throw new Error('Excel içinde okunabilir sayfa bulunamadı.')
+
+      const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { header: 1, raw: false, defval: '' })
+      const parsed = parsePreOrderExcelRows(sheetRows, products, getPrice)
+
+      if (parsed.unresolvedProducts.length > 0) {
+        const visibleItems = parsed.unresolvedProducts.slice(0, 3).join(', ')
+        const extraCount = parsed.unresolvedProducts.length > 3 ? ` +${parsed.unresolvedProducts.length - 3} ürün` : ''
+        throw new Error(`Exceldeki bazı ürünler bulunamadı: ${visibleItems}${extraCount}. Lütfen ürün adlarını kontrol edin.`)
+      }
+      if (parsed.items.length === 0) throw new Error('Excelde eşleşen ürün bulunamadı.')
+      if (parsed.classForecastRows.length === 0) throw new Error('Excelden sınıf dağılımı çıkarılamadı.')
+      if (parsed.orderQtyTotal !== parsed.forecastQtyTotal) {
+        throw new Error(`Excel toplamları eşleşmiyor. Ürün adedi: ${parsed.orderQtyTotal}, sınıf toplamı: ${parsed.forecastQtyTotal}.`)
+      }
+
+      setItems(parsed.items)
+      setClassForecastRows(parsed.classForecastRows)
+      if (parsed.schoolName) setSchoolName(parsed.schoolName)
+      if (parsed.address) setAddress(parsed.address)
+      setExcelImportSummary({
+        fileName: selectedFile.name,
+        rowCount: parsed.sourceLineCount,
+        productCount: parsed.items.length,
+        qtyTotal: parsed.orderQtyTotal,
+        forecastTotal: parsed.forecastQtyTotal,
+      })
+    } catch (error) {
+      setExcelImportError(error?.message || 'Excel dosyası okunamadı.')
+    } finally {
+      setExcelImportLoading(false)
+    }
+  }
 
   const save = async () => {
     if (!schoolName || filledItems.length === 0) return
@@ -498,6 +702,37 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
           Ön siparişimiz alındı! Ön Siparişlerim bölümünden link oluşturabilirsiniz.
         </div>
       )}
+      <div style={S.card}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 8 }}>Excel'den Otomatik Ön Sipariş</div>
+        <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+          Şablondaki <strong>SINIF</strong>, <strong>ÜRÜN ADI</strong>, <strong>SİPARİŞ ADEDİ</strong> sütunları okunur ve form otomatik doldurulur.
+        </div>
+        <input
+          type="file"
+          accept=".xlsx,.xls"
+          style={S.input}
+          onChange={handleExcelImport}
+          disabled={excelImportLoading}
+        />
+        {excelImportLoading && (
+          <div style={{ marginTop: 10, fontSize: 12, color: COLORS.primary, fontWeight: 700 }}>
+            Excel okunuyor, lütfen bekleyin...
+          </div>
+        )}
+        {excelImportError && (
+          <div style={{ marginTop: 10, fontSize: 12, color: '#b91c1c', background: '#fee2e2', borderRadius: 8, padding: '8px 10px', fontWeight: 600 }}>
+            {excelImportError}
+          </div>
+        )}
+        {excelImportSummary && (
+          <div style={{ marginTop: 10, fontSize: 12, color: '#166534', background: '#dcfce7', borderRadius: 8, padding: '8px 10px', display: 'grid', gap: 4 }}>
+            <div><strong>Dosya:</strong> {excelImportSummary.fileName}</div>
+            <div><strong>Okunan satır:</strong> {excelImportSummary.rowCount}</div>
+            <div><strong>Eşleşen ürün:</strong> {excelImportSummary.productCount}</div>
+            <div><strong>Ürün adedi toplamı:</strong> {excelImportSummary.qtyTotal} • <strong>Sınıf toplamı:</strong> {excelImportSummary.forecastTotal}</div>
+          </div>
+        )}
+      </div>
       <div style={S.card}>
         <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Kurum Bilgileri</div>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 14, marginBottom: 14 }}>
@@ -697,8 +932,17 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     const items = po.pre_order_items || []
     return sum + items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
   }, 0)
+  const getPreOrderTeacherSetQty = (preOrder) => {
+    const linkedForm = schoolForms.find(sf => sf.pre_order_id === preOrder?.id)
+    const classRows = getFormClassRows(linkedForm)
+    if (classRows.length > 0) return getTeacherSetCountFromRows(classRows)
+    return getForecastRowsFromPreOrder(preOrder).length
+  }
   const filteredTotalVat = getVatAmount(filteredTotal)
   const filteredTotalWithVat = getAmountWithVat(filteredTotal)
+  const filteredCargoTotal = filteredPreOrders.reduce((sum, po) => sum + getPreOrderCargoFee(po), 0)
+  const filteredGrandTotal = filteredTotal + filteredCargoTotal
+  const filteredTeacherSetTotal = filteredPreOrders.reduce((sum, po) => sum + getPreOrderTeacherSetQty(po), 0)
   const openEdit = (po) => {
     const { userNote, forecastRows } = splitPreOrderNote(po.note)
     setEditingPreOrder(po)
@@ -866,12 +1110,20 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             const sf = schoolForms.find(form => form.pre_order_id === po.id)
             const isEditable = po.status === 'on_siparis'
             const canManageForm = po.status === 'on_siparis' || po.status === 'kesinlesti'
+            const cargoFee = getPreOrderCargoFee(po)
+            const teacherSetQty = getPreOrderTeacherSetQty(po)
+            const totalWithCargo = total + cargoFee
             return (
               <tr key={po.id}>
                 <td style={S.td}><strong style={{ color: COLORS.primary }}>{po.id}</strong></td>
                 <td style={S.td}><strong>{po.school_name}</strong></td>
                 <td style={S.td}>{po.season}</td>
-                <td style={S.td}><strong>{fmt(total)}</strong></td>
+                <td style={S.td}>
+                  <strong>{fmt(totalWithCargo)}</strong>
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam: {fmt(total)}</div>
+                  <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(cargoFee)}</div>
+                  <div style={{ fontSize: 11, color: '#666' }}>Ücretsiz Set: {teacherSetQty}</div>
+                </td>
                 <td style={S.td}>
                   {sf ? (
                     <span style={S.badge(FORM_STATUS[sf.status]?.color || '#aaa')}>{FORM_STATUS[sf.status]?.label || sf.status}</span>
@@ -923,6 +1175,21 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             <tr style={{ background: '#f8f4ff' }}>
               <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.green }}>TOPLAM (KDV Dahil / 1/3'e %20):</td>
               <td style={{ ...S.td, fontWeight: 800, color: COLORS.green }}><strong>{fmt(filteredTotalWithVat)}</strong></td>
+              <td colSpan={3} style={S.td}></td>
+            </tr>
+            <tr style={{ background: '#f8f4ff' }}>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>TOPLAM KARGO (kişi başı {fmt(STUDENT_CARGO_FEE)}):</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.teal }}><strong>{fmt(filteredCargoTotal)}</strong></td>
+              <td colSpan={3} style={S.td}></td>
+            </tr>
+            <tr style={{ background: '#f8f4ff' }}>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.primary }}>TOPLAM (Kargo Dahil):</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}><strong>{fmt(filteredGrandTotal)}</strong></td>
+              <td colSpan={3} style={S.td}></td>
+            </tr>
+            <tr style={{ background: '#f8f4ff' }}>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.orange }}>TOPLAM ÜCRETSİZ ÖĞRETMEN SETİ:</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.orange }}><strong>{filteredTeacherSetTotal}</strong></td>
               <td colSpan={3} style={S.td}></td>
             </tr>
           </tfoot>

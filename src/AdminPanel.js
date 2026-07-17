@@ -20,6 +20,35 @@ const ADMIN_GUIDE_DISMISS_KEY = 'kk_admin_guide_dismissed'
 const ACCOUNTING_ALLOWED_NAV_IDS = ['dashboard', 'payments', 'checks']
 const toFilterText = (value) => String(value || '').toLocaleLowerCase('tr-TR')
 const parseMoney = (value) => parseFloat(value) || 0
+const STUDENT_CARGO_FEE = 100
+const PREORDER_FORECAST_MARKER = '[[CLASS_FORECAST]]'
+const getPreOrderItemQtyTotal = (preOrder) => (preOrder?.pre_order_items || []).reduce((sum, item) => sum + (parseInt(item?.qty, 10) || 0), 0)
+const getPreOrderAutoCargoFee = (preOrder) => {
+  const explicitCargoFee = parseMoney(preOrder?.cargo_fee)
+  if (explicitCargoFee > 0) return explicitCargoFee
+  return getPreOrderItemQtyTotal(preOrder) * STUDENT_CARGO_FEE
+}
+const sanitizeForecastRows = (rows = []) => (rows || [])
+  .map(row => ({
+    grade: row?.grade || '',
+    qty: parseInt(row?.qty, 10) || 0,
+  }))
+  .filter(row => row.grade && row.qty > 0)
+const splitPreOrderNote = (rawNote) => {
+  const note = String(rawNote || '')
+  const markerIndex = note.indexOf(PREORDER_FORECAST_MARKER)
+  if (markerIndex < 0) return { userNote: note.trim(), forecastRows: [] }
+  const userNote = note.slice(0, markerIndex).trim()
+  const forecastRaw = note.slice(markerIndex + PREORDER_FORECAST_MARKER.length).trim()
+  try {
+    const parsed = JSON.parse(forecastRaw)
+    return { userNote, forecastRows: sanitizeForecastRows(parsed) }
+  } catch {
+    return { userNote: note.trim(), forecastRows: [] }
+  }
+}
+const getOrderCargoFee = (order) => parseMoney(order?.cargo_fee)
+const getOrderTotalWithCargo = (order) => parseMoney(order?.total) + getOrderCargoFee(order)
 const escapeCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
 const downloadCsvReport = (filename, headers, rows) => {
   const csvText = [headers, ...rows]
@@ -773,23 +802,30 @@ function Dealers({ dealers, products, loadAll, logAdminAction, isSuperUser, isMo
 
 function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAdminAction, isMobile }) {
   const [detail, setDetail] = useState(null)
+  const detailNoteData = splitPreOrderNote(detail?.note)
+  const detailForecastRows = detailNoteData.forecastRows
+  const detailSubtotal = (detail?.pre_order_items || []).reduce((sum, item) => sum + ((item.qty || 0) * (item.unit_price || 0)), 0)
+  const detailCargoFee = getPreOrderAutoCargoFee(detail)
+  const detailTotalWithCargo = detailSubtotal + detailCargoFee
 
   const convertToOrder = async (po) => {
     const items = po.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+    const autoCargoFee = getPreOrderAutoCargoFee(po)
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', note: po.note, status: 'beklemede' }])
+    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: autoCargoFee, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', note: po.note, status: 'beklemede' }])
     for (const item of items) {
       await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
     }
     const dealer = dealers.find(d => d.id === po.dealer_id)
     await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', po.dealer_id)
-    await supabase.from('pre_orders').update({ status: 'siparise_donustu' }).eq('id', po.id)
+    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: autoCargoFee }).eq('id', po.id)
     await logAdminAction('preorder_converted_to_order', `preorder:${po.id}`, {
       order_id: orderId,
       dealer_id: po.dealer_id,
       school_name: po.school_name,
       total,
+      cargo_fee: autoCargoFee,
     })
     setDetail(null); loadAll()
     alert('Sipariş oluşturuldu: ' + orderId)
@@ -813,13 +849,19 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
           ) : preOrders.map(po => {
             const items = po.pre_order_items || []
             const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+            const cargoFee = getPreOrderAutoCargoFee(po)
+            const totalWithCargo = total + cargoFee
             return (
               <tr key={po.id}>
                 <td style={S.td}><strong style={{ color: COLORS.primary }}>{po.id}</strong></td>
                 <td style={S.td}>{getDealerName(po.dealer_id)}</td>
                 <td style={S.td}>{po.school_name}</td>
                 <td style={S.td}>{po.season}</td>
-                <td style={S.td}><strong>{fmt(total)}</strong></td>
+                <td style={S.td}>
+                  <strong>{fmt(totalWithCargo)}</strong>
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam: {fmt(total)}</div>
+                  <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(cargoFee)}</div>
+                </td>
                 <td style={S.td}><span style={S.badge(STATUS[po.status]?.color || '#aaa')}>{STATUS[po.status]?.label || po.status}</span></td>
                 <td style={S.td}>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -858,11 +900,49 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
               <tfoot>
                 <tr style={{ background: '#f8f4ff' }}>
                   <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right' }}>TOPLAM:</td>
-                  <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{fmt((detail.pre_order_items || []).reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0))}</td>
+                  <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{fmt(detailSubtotal)}</td>
+                </tr>
+                <tr style={{ background: '#f8f4ff' }}>
+                  <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>KARGO (kişi başı {fmt(STUDENT_CARGO_FEE)}):</td>
+                  <td style={{ ...S.td, fontWeight: 800, color: COLORS.teal }}>{fmt(detailCargoFee)}</td>
+                </tr>
+                <tr style={{ background: '#f8f4ff' }}>
+                  <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right' }}>KARGO DAHİL TOPLAM:</td>
+                  <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{fmt(detailTotalWithCargo)}</td>
                 </tr>
               </tfoot>
             </table>
-            {detail.note && <div style={{ marginTop: 12, padding: 12, background: '#f8f4ff', borderRadius: 8, fontSize: 13 }}>Not: {detail.note}</div>}
+            {detailNoteData.userNote && (
+              <div style={{ marginTop: 12, padding: 12, background: '#f8f4ff', borderRadius: 8, fontSize: 13 }}>
+                <strong style={{ color: COLORS.primary }}>Not:</strong> {detailNoteData.userNote}
+              </div>
+            )}
+            {detailForecastRows.length > 0 && (
+              <div style={{ marginTop: 12, padding: 12, background: '#f8f4ff', borderRadius: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.primary, marginBottom: 8 }}>Ön Görülen Sınıf Dağılımı</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 360 }}>
+                  <thead>
+                    <tr><th style={S.th}>Sınıf</th><th style={S.th}>Adet</th></tr>
+                  </thead>
+                  <tbody>
+                    {detailForecastRows.map((row, idx) => (
+                      <tr key={`detail-forecast-${row.grade}-${idx}`}>
+                        <td style={S.td}>{row.grade}</td>
+                        <td style={S.td}><strong>{row.qty}</strong></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background: '#fff' }}>
+                      <td style={{ ...S.td, fontWeight: 800, textAlign: 'right' }}>TOPLAM:</td>
+                      <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>
+                        {detailForecastRows.reduce((sum, row) => sum + (row.qty || 0), 0)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
             {(detail.status === 'on_siparis' || detail.status === 'kesinlesti') && (
               <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end', marginTop: 16 }}>
                 <button style={S.btn(COLORS.green)} onClick={() => convertToOrder(detail)}>Siparişe Dönüştür</button>
@@ -878,6 +958,7 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
 function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAction, isMobile }) {
   const [modal, setModal] = useState(false)
   const [processModal, setProcessModal] = useState(false)
+  const [processSaving, setProcessSaving] = useState(false)
   const [selectedOrder, setSelectedOrder] = useState(null)
   const [classItems, setClassItems] = useState([{ grade: '1. Sınıf', branch: '', teacher: '', qty: '' }])
   const [processForm, setProcessForm] = useState({ cargo_date: '', cargo_fee: '', free_qty: 0, dia_cari_kodu: '', dia_fatura_no: '', dia_status: false, invoice_status: 'kesilmedi', cargo_status: 'faturalanmadi' })
@@ -904,6 +985,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
     } else {
       setClassItems([{ grade: '1. Sınıf', branch: '', teacher: '', qty: '' }])
     }
+    setProcessSaving(false)
     setProcessModal(true)
   }
 
@@ -914,6 +996,9 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
   }
 
   const saveProcess = async () => {
+    if (processSaving) return
+    setProcessSaving(true)
+    try {
     await supabase.from('orders').update({
       cargo_date: processForm.cargo_date || null,
       cargo_fee: parseFloat(processForm.cargo_fee) || 0,
@@ -942,6 +1027,9 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       class_items: validItems.length,
     })
     setProcessModal(false); loadAll()
+    } finally {
+      setProcessSaving(false)
+    }
   }
 
   const save = async () => {
@@ -977,7 +1065,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 960 }}>
           <thead><tr>
-            <th style={S.th}>No</th><th style={S.th}>Bayi</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Tutar</th><th style={S.th}>Durum</th><th style={S.th}>Sevk</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
+            <th style={S.th}>No</th><th style={S.th}>Bayi</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Tutar (Kargo Dahil)</th><th style={S.th}>Durum</th><th style={S.th}>Sevk</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
           </tr></thead>
           <tbody>{orders.map(o => (
             <tr key={o.id}>
@@ -985,7 +1073,11 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
               <td style={S.td}>{getDealerName(o.dealer_id)}</td>
               <td style={S.td}>{o.school_name || '-'}</td>
               <td style={S.td}>{o.season}</td>
-              <td style={S.td}><strong>{fmt(o.total)}</strong></td>
+              <td style={S.td}>
+                <strong>{fmt(getOrderTotalWithCargo(o))}</strong>
+                <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam: {fmt(o.total)}</div>
+                <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(getOrderCargoFee(o))}</div>
+              </td>
               <td style={S.td}>
                 <select value={o.status || 'beklemede'} onChange={e => updateField(o.id, 'status', e.target.value)} style={{ ...S.select, width: 130, fontSize: 11, padding: '4px 8px' }}>
                   <option value="beklemede">Beklemede</option>
@@ -999,7 +1091,11 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
               <td style={S.td}><span style={S.badge(o.invoice_status === 'kesildi' ? COLORS.green : COLORS.orange)}>{o.invoice_status}</span></td>
               <td style={S.td}><span style={S.badge(o.dia_status ? COLORS.green : '#aaa')}>{o.dia_status ? 'İşlendi' : 'İşlenmedi'}</span></td>
               <td style={S.td}>
-                <button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => openProcess(o)}>İşleme Al</button>
+                {o.status === 'beklemede' ? (
+                  <button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => openProcess(o)}>İşleme Al</button>
+                ) : (
+                  <span style={S.badge('#6b7280')}>İşleme Alındı</span>
+                )}
               </td>
             </tr>
           ))}</tbody>
@@ -1094,8 +1190,8 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
             </div>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: isMobile ? 'flex-start' : 'flex-end', flexDirection: isMobile ? 'column' : 'row' }}>
-              <button style={S.btn('#aaa')} onClick={() => setProcessModal(false)}>İptal</button>
-              <button style={S.btn(COLORS.green)} onClick={saveProcess}>Kaydet</button>
+              <button style={S.btn('#aaa')} onClick={() => setProcessModal(false)} disabled={processSaving}>İptal</button>
+              <button style={S.btn(COLORS.green)} onClick={saveProcess} disabled={processSaving}>{processSaving ? 'Kaydediliyor...' : 'Kaydet'}</button>
             </div>
           </div>
         </div>
