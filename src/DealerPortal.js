@@ -145,6 +145,16 @@ const getExcelLabelValue = (rows = [], labels = []) => {
   }
   return ''
 }
+const isExcelQtyHeader = (cellValue) => {
+  const normalized = normalizeImportText(cellValue)
+  if (!normalized) return false
+  return (
+    normalized.includes('adet') ||
+    normalized.includes('aded') ||
+    normalized.includes('miktar') ||
+    normalized.includes('sayi')
+  )
+}
 const findExcelHeader = (rows = []) => {
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex] || []
@@ -152,7 +162,7 @@ const findExcelHeader = (rows = []) => {
     const classIndex = normalizedRow.findIndex(cell => cell.includes('sinif'))
     const productIndex = normalizedRow.findIndex(cell => cell.includes('urun') && (cell.includes('adi') || cell === 'urun'))
     const qtyCandidates = normalizedRow
-      .map((cell, idx) => (cell.includes('adet') || cell.includes('miktar')) ? idx : -1)
+      .map((cell, idx) => isExcelQtyHeader(cell) ? idx : -1)
       .filter(idx => idx >= 0)
     if (classIndex < 0 || productIndex < 0 || qtyCandidates.length === 0) continue
     const qtyIndex = qtyCandidates.find(idx => normalizedRow[idx].includes('siparis')) ?? qtyCandidates[0]
