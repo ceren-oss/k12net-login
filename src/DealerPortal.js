@@ -180,6 +180,14 @@ const mapExcelGrade = (value) => {
   if (gradeMatch) return `${gradeMatch[1]}. Sınıf`
   return null
 }
+const extractPackageSizeFromName = (value) => {
+  const normalized = normalizeImportText(value)
+  if (!normalized) return null
+  const match = normalized.match(/\b(\d{1,2})\b/)
+  if (!match) return null
+  const parsed = parseInt(match[1], 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
 const findProductByExcelName = (excelProductName, products = []) => {
   const normalizedTarget = normalizeImportText(excelProductName)
   if (!normalizedTarget) return null
@@ -192,6 +200,30 @@ const findProductByExcelName = (excelProductName, products = []) => {
 
   const includeMatch = prepared.find(item => item.normalized.includes(normalizedTarget) || normalizedTarget.includes(item.normalized))
   if (includeMatch) return includeMatch.product
+  const packageSize = extractPackageSizeFromName(excelProductName)
+  if (packageSize) {
+    const targetWantsStem = normalizedTarget.includes('stem')
+    const targetWantsOrtaokul = normalizedTarget.includes('ortaokul')
+    const packageCandidates = prepared.filter(item => {
+      if (!item.normalized.includes(String(packageSize))) return false
+      const isStem = item.normalized.includes('stem')
+      const isOrtaokul = item.normalized.includes('ortaokul')
+      if (targetWantsStem && !isStem) return false
+      if (!targetWantsStem && isStem) return false
+      if (targetWantsOrtaokul && !isOrtaokul) return false
+      if (!targetWantsOrtaokul && isOrtaokul) return false
+      return true
+    })
+    if (packageCandidates.length === 1) return packageCandidates[0].product
+    if (packageCandidates.length > 1) {
+      const bestByKeyword = packageCandidates.find(item => normalizedTarget.includes('kesif') && item.normalized.includes('kesif'))
+      if (bestByKeyword) return bestByKeyword.product
+      return packageCandidates
+        .slice()
+        .sort((a, b) => a.normalized.length - b.normalized.length)[0]
+        .product
+    }
+  }
 
   const targetTokens = normalizedTarget.split(' ').filter(token => token.length > 2)
   if (targetTokens.length === 0) return null
