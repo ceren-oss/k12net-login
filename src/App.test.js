@@ -1,8 +1,18 @@
-import { render, screen } from '@testing-library/react';
-import App from './App';
+import { render, screen } from '@testing-library/react'
+import App from './App'
+beforeEach(() => {
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: false,
+    json: async () => ({})
+  })
+})
 
-test('renders learn react link', () => {
-  render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
-});
+afterEach(() => {
+  jest.restoreAllMocks()
+})
+
+test('renders dealer portal login screen', async () => {
+  render(<App />)
+  const portalTitle = await screen.findByText(/Bayi Portalı/i)
+  expect(portalTitle).toBeInTheDocument()
+})
