@@ -109,6 +109,7 @@ const getPreOrderCargoFee = (preOrder) => {
   return getAutoCargoFeeByStudentQty(getPreOrderForecastQty(preOrder))
 }
 const getPreOrderTotalWithCargo = (preOrder) => getPreOrderSubtotal(preOrder) + getPreOrderCargoFee(preOrder)
+const generatePreOrderId = (seed = 0) => `ON-${(Date.now() + seed).toString().slice(-8)}${Math.random().toString(36).slice(2, 5).toUpperCase()}`
 const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
 const getOrderTeacherSetCount = (order) => parseInt(order?.free_qty, 10) || 0
 const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
@@ -660,6 +661,10 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   const [excelImportLoading, setExcelImportLoading] = useState(false)
   const [excelImportError, setExcelImportError] = useState('')
   const [excelImportSummary, setExcelImportSummary] = useState(null)
+  const [excelBatchFiles, setExcelBatchFiles] = useState([])
+  const [excelBatchLoading, setExcelBatchLoading] = useState(false)
+  const [excelBatchError, setExcelBatchError] = useState('')
+  const [excelBatchSummary, setExcelBatchSummary] = useState(null)
 
   const updateItem = (idx, field, value) => {
     setItems(prev => {
@@ -750,6 +755,127 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
       setExcelImportLoading(false)
     }
   }
+  const handleExcelBatchSelection = (event) => {
+    const selectedFiles = Array.from(event.target.files || []).filter(file => /\.(xlsx|xls)$/i.test(file.name || ''))
+    event.target.value = ''
+    if (selectedFiles.length === 0) {
+      setExcelBatchFiles([])
+      setExcelBatchError('Geçerli Excel dosyası seçilmedi.')
+      setExcelBatchSummary(null)
+      return
+    }
+    if (selectedFiles.length > 5) {
+      setExcelBatchFiles(selectedFiles.slice(0, 5))
+      setExcelBatchError('Aynı anda en fazla 5 Excel dosyası seçebilirsiniz.')
+      setExcelBatchSummary(null)
+      return
+    }
+    setExcelBatchFiles(selectedFiles)
+    setExcelBatchError('')
+    setExcelBatchSummary(null)
+  }
+
+  const createBatchPreOrdersFromExcel = async () => {
+    if (excelBatchFiles.length === 0) {
+      alert('Lütfen en az bir Excel dosyası seçiniz.')
+      return
+    }
+    if (products.length === 0) {
+      setExcelBatchError('Ürün listesi henüz yüklenmedi. Lütfen tekrar deneyin.')
+      return
+    }
+    setExcelBatchLoading(true)
+    setExcelBatchError('')
+    setExcelBatchSummary(null)
+    try {
+      const xlsxModule = await import('xlsx')
+      const XLSX = xlsxModule?.default && typeof xlsxModule.default.read === 'function' ? xlsxModule.default : xlsxModule
+      const parsedRowsByFile = []
+      const parseErrors = []
+
+      for (const file of excelBatchFiles) {
+        try {
+          const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellText: true, cellDates: false })
+          const firstSheetName = workbook.SheetNames?.[0]
+          if (!firstSheetName) throw new Error('Excel içinde okunabilir sayfa bulunamadı.')
+          const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { header: 1, raw: false, defval: '' })
+          const parsed = parsePreOrderExcelRows(sheetRows, products, getPrice)
+          if (parsed.unresolvedProducts.length > 0) {
+            const visibleItems = parsed.unresolvedProducts.slice(0, 3).join(', ')
+            const extraCount = parsed.unresolvedProducts.length > 3 ? ` +${parsed.unresolvedProducts.length - 3} ürün` : ''
+            throw new Error(`Eşleşmeyen ürünler: ${visibleItems}${extraCount}`)
+          }
+          if (parsed.items.length === 0) throw new Error('Eşleşen ürün bulunamadı.')
+          if (parsed.classForecastRows.length === 0) throw new Error('Sınıf dağılımı çıkarılamadı.')
+          if (parsed.orderQtyTotal !== parsed.forecastQtyTotal) {
+            throw new Error(`Ürün adedi (${parsed.orderQtyTotal}) ve sınıf toplamı (${parsed.forecastQtyTotal}) eşit değil.`)
+          }
+          const parsedSchoolName = String(parsed.schoolName || '').trim()
+          if (!parsedSchoolName) throw new Error('Kurum adı bulunamadı.')
+          parsedRowsByFile.push({
+            fileName: file.name,
+            schoolName: parsedSchoolName,
+            address: String(parsed.address || '').trim(),
+            items: parsed.items,
+            classForecastRows: parsed.classForecastRows,
+            orderQtyTotal: parsed.orderQtyTotal,
+          })
+        } catch (error) {
+          parseErrors.push(`${file.name}: ${error?.message || 'Excel okunamadı'}`)
+        }
+      }
+
+      if (parseErrors.length > 0) {
+        throw new Error(parseErrors.join(' | '))
+      }
+
+      const preOrdersPayload = parsedRowsByFile.map((row, idx) => ({
+        id: generatePreOrderId(idx),
+        dealer_id: dealer.id,
+        school_name: row.schoolName,
+        address: row.address,
+        season,
+        note: buildPreOrderNote(`Toplu Excel: ${row.fileName}`, row.classForecastRows),
+        status: 'on_siparis',
+      }))
+      const preOrderItemsPayload = preOrdersPayload.flatMap((preOrder, idx) => {
+        const row = parsedRowsByFile[idx]
+        return row.items.map(item => ({
+          pre_order_id: preOrder.id,
+          grade: '-',
+          branch: '-',
+          teacher: '-',
+          product_id: parseInt(item.product_id, 10),
+          qty: parseInt(item.qty, 10),
+          unit_price: parseAmount(item.unit_price),
+        }))
+      })
+
+      const { error: preOrdersInsertError } = await supabase.from('pre_orders').insert(preOrdersPayload)
+      if (preOrdersInsertError) throw new Error(preOrdersInsertError.message || 'Toplu ön sipariş kaydedilemedi.')
+      const { error: preOrderItemsInsertError } = await supabase.from('pre_order_items').insert(preOrderItemsPayload)
+      if (preOrderItemsInsertError) {
+        await supabase.from('pre_orders').delete().in('id', preOrdersPayload.map(item => item.id))
+        throw new Error(preOrderItemsInsertError.message || 'Toplu ön sipariş kalemleri kaydedilemedi.')
+      }
+
+      setSubmitted(true)
+      setExcelBatchSummary({
+        createdCount: preOrdersPayload.length,
+        totalQty: parsedRowsByFile.reduce((sum, row) => sum + (row.orderQtyTotal || 0), 0),
+        files: parsedRowsByFile.map(row => ({ fileName: row.fileName, schoolName: row.schoolName, qty: row.orderQtyTotal })),
+      })
+      setExcelBatchFiles([])
+      setExcelImportError('')
+      setExcelImportSummary(null)
+      await loadAll()
+      setTimeout(() => setSubmitted(false), 3000)
+    } catch (error) {
+      setExcelBatchError(error?.message || 'Toplu Excel işleme başarısız oldu.')
+    } finally {
+      setExcelBatchLoading(false)
+    }
+  }
 
   const save = async () => {
     if (!schoolName || filledItems.length === 0) return
@@ -766,7 +892,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
       return
     }
     setLoading(true)
-    const preOrderId = 'ON-' + Date.now().toString().slice(-6)
+    const preOrderId = generatePreOrderId()
     const noteWithForecast = buildPreOrderNote(note, validForecastRows)
     await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, address, season, note: noteWithForecast, status: 'on_siparis' }])
     await supabase.from('pre_order_items').insert(filledItems.map(item => ({
@@ -774,6 +900,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
       product_id: parseInt(item.product_id, 10), qty: parseInt(item.qty, 10), unit_price: parseAmount(item.unit_price),
     })))
     setSubmitted(true)
+    setExcelBatchSummary(null)
     setLoading(false)
     setSchoolName('')
     setAddress('')
@@ -789,7 +916,9 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
       <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Ön Sipariş Ver</h2>
       {submitted && (
         <div style={{ background: COLORS.green + '22', border: '2px solid ' + COLORS.green, borderRadius: 10, padding: 16, marginBottom: 20, color: COLORS.green, fontWeight: 700, textAlign: 'center' }}>
-          Ön siparişimiz alındı! Ön Siparişlerim bölümünden link oluşturabilirsiniz.
+          {excelBatchSummary?.createdCount > 1
+            ? `${excelBatchSummary.createdCount} ön sipariş toplu olarak oluşturuldu!`
+            : 'Ön siparişimiz alındı! Ön Siparişlerim bölümünden link oluşturabilirsiniz.'}
         </div>
       )}
       <div style={S.card}>
@@ -800,9 +929,10 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         <input
           type="file"
           accept=".xlsx,.xls"
+          data-testid="excel-single-input"
           style={S.input}
           onChange={handleExcelImport}
-          disabled={excelImportLoading}
+          disabled={excelImportLoading || excelBatchLoading}
         />
         {excelImportLoading && (
           <div style={{ marginTop: 10, fontSize: 12, color: COLORS.primary, fontWeight: 700 }}>
@@ -822,6 +952,49 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
             <div><strong>Ürün adedi toplamı:</strong> {excelImportSummary.qtyTotal} • <strong>Sınıf toplamı:</strong> {excelImportSummary.forecastTotal}</div>
           </div>
         )}
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px dashed #e6ddff' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>Toplu Excel ile Ön Sipariş (en fazla 5 dosya)</div>
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+            Seçilen her Excel dosyası için tek seferde ayrı ön sipariş oluşturulur.
+          </div>
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            multiple
+            data-testid="excel-batch-input"
+            style={S.input}
+            onChange={handleExcelBatchSelection}
+            disabled={excelBatchLoading || excelImportLoading}
+          />
+          {excelBatchFiles.length > 0 && (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#555' }}>
+              Seçilen dosyalar: {excelBatchFiles.map(file => file.name).join(', ')}
+            </div>
+          )}
+          <div style={{ marginTop: 10, display: 'flex', justifyContent: isMobile ? 'stretch' : 'flex-end' }}>
+            <button
+              type="button"
+              data-testid="excel-batch-create-button"
+              style={{ ...S.btn(COLORS.orange), width: isMobile ? '100%' : 'auto' }}
+              onClick={createBatchPreOrdersFromExcel}
+              disabled={excelBatchLoading || excelImportLoading || excelBatchFiles.length === 0}
+            >
+              {excelBatchLoading ? 'Toplu oluşturuluyor...' : 'Toplu Ön Sipariş Oluştur'}
+            </button>
+          </div>
+          {excelBatchError && (
+            <div style={{ marginTop: 10, fontSize: 12, color: '#b91c1c', background: '#fee2e2', borderRadius: 8, padding: '8px 10px', fontWeight: 600 }}>
+              {excelBatchError}
+            </div>
+          )}
+          {excelBatchSummary && (
+            <div style={{ marginTop: 10, fontSize: 12, color: '#166534', background: '#dcfce7', borderRadius: 8, padding: '8px 10px', display: 'grid', gap: 4 }}>
+              <div><strong>Oluşturulan ön sipariş:</strong> {excelBatchSummary.createdCount}</div>
+              <div><strong>Toplam ürün adedi:</strong> {excelBatchSummary.totalQty}</div>
+              <div><strong>Dosyalar:</strong> {excelBatchSummary.files.map(file => `${file.fileName} → ${file.schoolName} (${file.qty})`).join(' • ')}</div>
+            </div>
+          )}
+        </div>
       </div>
       <div style={S.card}>
         <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Kurum Bilgileri</div>
