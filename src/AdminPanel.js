@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from './supabaseClient'
 import loginBg from './assets/login-bg.png'
 import kesifKutusuLogo from './assets/kesif-kutusu-logo.png'
@@ -1397,7 +1397,72 @@ function Checks({ dealers, checks, loadAll, logAdminAction, isMobile }) {
   const [modal, setModal] = useState(false)
   const [form, setForm] = useState({ dealer_id: '', amount: '', due_date: '', status: 'musteride', bank: '', note: '' })
   const [filters, setFilters] = useState({ dealer_id: '', status: '', min_amount: '', max_amount: '', start_date: '', end_date: '', query: '' })
+  const [excelImportLoading, setExcelImportLoading] = useState(false)
+  const [excelImportError, setExcelImportError] = useState('')
+  const [excelImportSummary, setExcelImportSummary] = useState(null)
+  const fileInputRef = useRef(null)
   const STATUS = { musteride: { label: 'Müşteride', color: COLORS.orange }, portfolyde: { label: 'Portföyde', color: COLORS.teal }, tedarikcide: { label: 'Tedarikçide', color: COLORS.primary }, tahsil_edildi: { label: 'Tahsil Edildi', color: COLORS.green } }
+  const STATUS_ALIASES = {
+    musteride: ['musteride', 'müşteride'],
+    portfolyde: ['portfolyde', 'portföyde'],
+    tedarikcide: ['tedarikcide', 'tedarikçide'],
+    tahsil_edildi: ['tahsil_edildi', 'tahsil edildi', 'tahsiledildi'],
+  }
+  const normalizeHeader = (value) => String(value || '')
+    .trim()
+    .toLocaleLowerCase('tr-TR')
+    .replace(/ı/g, 'i')
+    .replace(/ş/g, 's')
+    .replace(/ç/g, 'c')
+    .replace(/ğ/g, 'g')
+    .replace(/ö/g, 'o')
+    .replace(/ü/g, 'u')
+    .replace(/[^a-z0-9]/g, '')
+  const parseImportAmount = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    const raw = String(value || '').trim()
+    if (!raw) return 0
+    let normalized = raw.replace(/\s/g, '')
+    if (normalized.includes(',') && normalized.includes('.')) {
+      normalized = normalized.replace(/\./g, '').replace(',', '.')
+    } else if (normalized.includes(',')) {
+      normalized = normalized.replace(',', '.')
+    }
+    const parsed = parseFloat(normalized)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  const parseImportDate = (value) => {
+    if (!value && value !== 0) return ''
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10)
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const jsDate = new Date(Math.round((value - 25569) * 86400 * 1000))
+      if (!Number.isNaN(jsDate.getTime())) return jsDate.toISOString().slice(0, 10)
+      return ''
+    }
+    const raw = String(value).trim()
+    if (!raw) return ''
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
+    const dotMatch = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/)
+    if (dotMatch) {
+      const [, day, month, year] = dotMatch
+      const yyyy = year.padStart(4, '0')
+      const mm = month.padStart(2, '0')
+      const dd = day.padStart(2, '0')
+      return `${yyyy}-${mm}-${dd}`
+    }
+    const fallback = new Date(raw)
+    if (!Number.isNaN(fallback.getTime())) return fallback.toISOString().slice(0, 10)
+    return ''
+  }
+  const getStatusFromText = (value) => {
+    const normalized = String(value || '').trim().toLocaleLowerCase('tr-TR')
+    if (!normalized) return 'musteride'
+    const match = Object.entries(STATUS_ALIASES).find(([, aliases]) => aliases.includes(normalized))
+    return match ? match[0] : 'musteride'
+  }
+  const openExcelImport = () => {
+    fileInputRef.current?.click()
+  }
   const updateFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }))
   const clearFilters = () => setFilters({ dealer_id: '', status: '', min_amount: '', max_amount: '', start_date: '', end_date: '', query: '' })
   const filteredChecks = checks.filter(check => {
@@ -1452,6 +1517,138 @@ function Checks({ dealers, checks, loadAll, logAdminAction, isMobile }) {
     setForm({ dealer_id: '', amount: '', due_date: '', status: 'musteride', bank: '', note: '' })
     loadAll()
   }
+  const importFromExcel = async (event) => {
+    const selectedFile = event.target.files?.[0]
+    event.target.value = ''
+    if (!selectedFile) return
+    setExcelImportLoading(true)
+    setExcelImportError('')
+    setExcelImportSummary(null)
+    try {
+      const xlsxModule = await import('xlsx')
+      const XLSX = xlsxModule?.default && typeof xlsxModule.default.read === 'function' ? xlsxModule.default : xlsxModule
+      const workbook = XLSX.read(await selectedFile.arrayBuffer(), { type: 'array', cellDates: true })
+      const firstSheetName = workbook.SheetNames?.[0]
+      if (!firstSheetName) throw new Error('Excel içinde okunabilir sayfa bulunamadı.')
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { header: 1, raw: true, defval: '' })
+      if (!rows || rows.length < 2) throw new Error('Excel en az bir başlık satırı ve bir veri satırı içermeli.')
+
+      const headers = (rows[0] || []).map(normalizeHeader)
+      const findHeaderIndex = (aliases) => headers.findIndex((h) => aliases.includes(h))
+
+      const dealerIdIdx = findHeaderIndex(['dealerid', 'bayiid', 'bayiid'])
+      const dealerNameIdx = findHeaderIndex(['dealer', 'bayi', 'bayiadi', 'dealername'])
+      const amountIdx = findHeaderIndex(['tutar', 'amount'])
+      const dueDateIdx = findHeaderIndex(['vade', 'vadetarihi', 'duedate'])
+      const bankIdx = findHeaderIndex(['banka', 'bank'])
+      const statusIdx = findHeaderIndex(['durum', 'status'])
+      const noteIdx = findHeaderIndex(['not', 'aciklama', 'note', 'description'])
+
+      if (amountIdx < 0 || dueDateIdx < 0 || (dealerIdIdx < 0 && dealerNameIdx < 0)) {
+        throw new Error('Zorunlu kolonlar eksik. Gerekli kolonlar: bayi veya bayi_id, tutar, vade.')
+      }
+
+      const dealerById = new Map(dealers.map(d => [String(d.id), d]))
+      const dealerByName = new Map(dealers.map(d => [toFilterText(d.name), d]))
+      const dealerByUsername = new Map(dealers.map(d => [toFilterText(d.username), d]))
+
+      const checkRows = []
+      const paymentRows = []
+      const balanceDeltaByDealerId = new Map()
+      const rowErrors = []
+
+      for (let i = 1; i < rows.length; i += 1) {
+        const row = rows[i] || []
+        const isEmptyRow = row.every((cell) => String(cell || '').trim() === '')
+        if (isEmptyRow) continue
+
+        const dealerIdRaw = dealerIdIdx >= 0 ? String(row[dealerIdIdx] || '').trim() : ''
+        const dealerNameRaw = dealerNameIdx >= 0 ? String(row[dealerNameIdx] || '').trim() : ''
+        let dealer = null
+        if (dealerIdRaw) dealer = dealerById.get(dealerIdRaw) || null
+        if (!dealer && dealerNameRaw) {
+          const key = toFilterText(dealerNameRaw)
+          dealer = dealerByName.get(key) || dealerByUsername.get(key) || null
+        }
+        if (!dealer) {
+          rowErrors.push(`${i + 1}. satır: bayi bulunamadı (${dealerIdRaw || dealerNameRaw || '-'})`)
+          continue
+        }
+
+        const amount = parseImportAmount(row[amountIdx])
+        if (amount <= 0) {
+          rowErrors.push(`${i + 1}. satır: tutar geçersiz`)
+          continue
+        }
+        const dueDate = parseImportDate(row[dueDateIdx])
+        if (!dueDate) {
+          rowErrors.push(`${i + 1}. satır: vade tarihi geçersiz`)
+          continue
+        }
+        const status = statusIdx >= 0 ? getStatusFromText(row[statusIdx]) : 'musteride'
+        const bank = bankIdx >= 0 ? String(row[bankIdx] || '').trim() : ''
+        const note = noteIdx >= 0 ? String(row[noteIdx] || '').trim() : ''
+
+        checkRows.push({
+          dealer_id: dealer.id,
+          amount,
+          due_date: dueDate,
+          status,
+          bank,
+          note,
+        })
+        const paymentId = `CEK-${Date.now().toString().slice(-6)}-${i}`
+        const paymentNote = `Vade: ${dueDate}${bank ? ` / ${bank}` : ''}`
+        paymentRows.push({
+          id: paymentId,
+          dealer_id: dealer.id,
+          amount,
+          method: 'cek',
+          note: paymentNote,
+        })
+        balanceDeltaByDealerId.set(dealer.id, (balanceDeltaByDealerId.get(dealer.id) || 0) + amount)
+      }
+
+      if (checkRows.length === 0) {
+        throw new Error(rowErrors.length > 0 ? rowErrors.slice(0, 5).join(' | ') : 'İçe aktarılacak geçerli satır bulunamadı.')
+      }
+      if (rowErrors.length > 0) {
+        throw new Error(`Bazı satırlar hatalı: ${rowErrors.slice(0, 5).join(' | ')}`)
+      }
+
+      const { error: checkInsertError } = await supabase.from('checks').insert(checkRows)
+      if (checkInsertError) throw new Error(`Çek kayıtları eklenemedi: ${checkInsertError.message}`)
+
+      const { error: paymentInsertError } = await supabase.from('payments').insert(paymentRows)
+      if (paymentInsertError) throw new Error(`Ödeme kayıtları eklenemedi: ${paymentInsertError.message}`)
+
+      for (const [dealerId, delta] of balanceDeltaByDealerId.entries()) {
+        const dealer = dealers.find(d => d.id === dealerId)
+        const nextBalance = parseMoney(dealer?.balance) + delta
+        const { error: dealerUpdateError } = await supabase.from('dealers').update({ balance: nextBalance }).eq('id', dealerId)
+        if (dealerUpdateError) throw new Error(`Bayi bakiyesi güncellenemedi: ${dealerUpdateError.message}`)
+      }
+
+      await logAdminAction('checks_imported', 'checks:bulk', {
+        file_name: selectedFile.name,
+        count: checkRows.length,
+        dealer_count: balanceDeltaByDealerId.size,
+        total_amount: checkRows.reduce((sum, row) => sum + parseMoney(row.amount), 0),
+      })
+
+      setExcelImportSummary({
+        fileName: selectedFile.name,
+        importedCount: checkRows.length,
+        affectedDealerCount: balanceDeltaByDealerId.size,
+        totalAmount: checkRows.reduce((sum, row) => sum + parseMoney(row.amount), 0),
+      })
+      await loadAll()
+    } catch (error) {
+      setExcelImportError(error?.message || 'Excel içe aktarma başarısız oldu.')
+    } finally {
+      setExcelImportLoading(false)
+    }
+  }
 
   const updateStatus = async (id, status) => {
     await supabase.from('checks').update({ status }).eq('id', id)
@@ -1488,10 +1685,31 @@ function Checks({ dealers, checks, loadAll, logAdminAction, isMobile }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
         <h2 style={{ color: COLORS.primary }}>Çekler</h2>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={importFromExcel} style={{ display: 'none' }} />
+          <button style={S.btn(COLORS.orange)} onClick={openExcelImport} disabled={excelImportLoading}>
+            {excelImportLoading ? 'Excel Aktarılıyor...' : 'Excelden Aktar'}
+          </button>
           <button style={S.btn(COLORS.teal)} onClick={exportReport}>Rapor İndir</button>
           <button style={S.btn()} onClick={() => setModal(true)}>+ Çek Ekle</button>
         </div>
       </div>
+      {(excelImportError || excelImportSummary) && (
+        <div style={{ ...S.card, marginBottom: 12, borderLeft: `4px solid ${excelImportError ? '#ef4444' : COLORS.green}` }}>
+          {excelImportError && (
+            <div style={{ color: '#b42318', fontSize: 13, fontWeight: 600 }}>
+              {excelImportError}
+            </div>
+          )}
+          {excelImportSummary && (
+            <div style={{ color: '#1a7f37', fontSize: 13, display: 'grid', gap: 4 }}>
+              <div><strong>Dosya:</strong> {excelImportSummary.fileName}</div>
+              <div><strong>Aktarılan çek:</strong> {excelImportSummary.importedCount}</div>
+              <div><strong>Etkilenen bayi:</strong> {excelImportSummary.affectedDealerCount}</div>
+              <div><strong>Toplam tutar:</strong> {fmt(excelImportSummary.totalAmount)}</div>
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ ...S.card, marginBottom: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, minmax(160px, 1fr))', gap: 10 }}>
           <div>
