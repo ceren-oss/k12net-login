@@ -383,6 +383,69 @@ const getOrderQtyMismatchMessage = (orderItems = [], classItems = []) => {
   if (classQtyTotal < orderQtyTotal) return getQtyMismatchMessage(orderQtyTotal, classQtyTotal)
   return ''
 }
+const PREORDER_FORECAST_MARKER = '[[CLASS_FORECAST]]'
+const sanitizeForecastRows = (rows = []) => (rows || [])
+  .map(row => ({
+    grade: row?.grade || GRADES[0],
+    qty: parseInt(row?.qty, 10) || 0,
+  }))
+  .filter(row => row.grade && row.qty > 0)
+const getForecastRowsFromPreOrderNote = (rawNote) => {
+  const note = String(rawNote || '')
+  const markerIndex = note.indexOf(PREORDER_FORECAST_MARKER)
+  if (markerIndex < 0) return []
+  const forecastRaw = note.slice(markerIndex + PREORDER_FORECAST_MARKER.length).trim()
+  try {
+    return sanitizeForecastRows(JSON.parse(forecastRaw))
+  } catch {
+    return []
+  }
+}
+const buildClassRowsFromForecast = (forecastRows = []) => sanitizeForecastRows(forecastRows).map(row => ({
+  grade: row.grade,
+  branch: '-',
+  teacher: 'Otomatik',
+  teacher_email: '-',
+  teacher_phone: '-',
+  qty: String(row.qty),
+}))
+const getDominantPackageCount = (orderItems = [], productsById = {}, selectablePackageCounts = []) => {
+  const selectableSet = new Set(selectablePackageCounts || [])
+  if (selectableSet.size === 0) return null
+  const qtyByCount = {}
+  for (const item of orderItems || []) {
+    const productName = productsById[item.product_id] || ''
+    const packageCount = parsePackageSizeFromName(productName)
+    if (!selectableSet.has(packageCount)) continue
+    qtyByCount[packageCount] = (qtyByCount[packageCount] || 0) + (parseInt(item.qty, 10) || 0)
+  }
+  const dominantEntry = Object.entries(qtyByCount).sort((a, b) => (b[1] || 0) - (a[1] || 0))[0]
+  return dominantEntry ? parseInt(dominantEntry[0], 10) : null
+}
+const buildAutoSelectedActivitiesByLevel = (levels = [], packageCount = 0) => {
+  if (!packageCount || packageCount < 1) return {}
+  const selectedByLevel = {}
+  for (const level of levels) {
+    const options = getActivityOptionsForLevel(level)
+    if (!options.length) continue
+    const picks = []
+    for (let idx = 0; idx < packageCount; idx += 1) picks.push(options[idx % options.length])
+    selectedByLevel[level] = picks
+  }
+  return selectedByLevel
+}
+const buildAutoSelectedStemByPlan = (stemPlanConfigs = []) => {
+  const selectedStem = {}
+  for (const plan of stemPlanConfigs || []) {
+    if (!plan?.planKey) continue
+    selectedStem[plan.planKey] = {}
+    for (const shipment of plan.shipments || []) {
+      if (!shipment?.key || !Array.isArray(shipment.options) || shipment.options.length === 0) continue
+      selectedStem[plan.planKey][shipment.key] = shipment.options[0]
+    }
+  }
+  return selectedStem
+}
 
 
 const S = {
@@ -413,6 +476,7 @@ export default function SchoolForm({ token }) {
 
   // Sınıf dağılımı
   const [classItems, setClassItems] = useState([{ grade: '1. Sınıf', branch: '', teacher: '', teacher_email: '', teacher_phone: '', qty: '' }])
+  const [isAutoFilledMode, setIsAutoFilledMode] = useState(false)
   const [selectedActivitiesByLevel, setSelectedActivitiesByLevel] = useState({})
   const [selectedPackageByLevel, setSelectedPackageByLevel] = useState({})
   const [selectedStemByPlan, setSelectedStemByPlan] = useState({})
@@ -427,6 +491,7 @@ export default function SchoolForm({ token }) {
     const { data: formData } = await supabase.from('school_forms').select('*').eq('token', token).single()
     if (!formData) { setLoading(false); return }
     setForm(formData)
+    setClassItems([{ grade: '1. Sınıf', branch: '', teacher: '', teacher_email: '', teacher_phone: '', qty: '' }])
 
     // Daha once doldurulmusse yukle
     if (formData.school_name) {
@@ -444,6 +509,15 @@ export default function SchoolForm({ token }) {
       supabase.from('pre_orders').select('*, pre_order_items(*)').eq('id', formData.pre_order_id).single(),
       supabase.from('products').select('id, name'),
     ])
+    const productMap = {}
+    if (productRows) {
+      productRows.forEach(product => { productMap[product.id] = product.name })
+      setProductsById(productMap)
+    }
+    setSelectedActivitiesByLevel({})
+    setSelectedPackageByLevel({})
+    setSelectedStemByPlan({})
+    setIsAutoFilledMode(false)
 
     if (items && items.length > 0) {
       const classRows = []
@@ -507,14 +581,29 @@ export default function SchoolForm({ token }) {
       if (Object.keys(selectedPackageBySavedLevel).length > 0) {
         setSelectedPackageByLevel(selectedPackageBySavedLevel)
       }
+    } else if (po) {
+      const forecastRows = getForecastRowsFromPreOrderNote(po.note)
+      const classRowsFromForecast = buildClassRowsFromForecast(forecastRows)
+      if (classRowsFromForecast.length > 0) {
+        setClassItems(classRowsFromForecast)
+        setIsAutoFilledMode(true)
+        const autoLevels = [...new Set(classRowsFromForecast.filter(row => (parseInt(row.qty, 10) || 0) > 0).map(row => row.grade))]
+        const orderItemsFromPreOrder = po.pre_order_items || []
+        const packageConfigs = getPackageSelectionConfigs(orderItemsFromPreOrder, productMap)
+        const selectablePackageCounts = packageConfigs.filter(config => [4, 8, 12].includes(config.count)).map(config => config.count)
+        if (selectablePackageCounts.length > 0) {
+          const dominantPackageCount = getDominantPackageCount(orderItemsFromPreOrder, productMap, selectablePackageCounts)
+          const defaultPackageCount = dominantPackageCount || selectablePackageCounts[0]
+          const autoSelectedPackageByLevel = Object.fromEntries(autoLevels.map(level => [level, defaultPackageCount]))
+          setSelectedPackageByLevel(autoSelectedPackageByLevel)
+          setSelectedActivitiesByLevel(buildAutoSelectedActivitiesByLevel(autoLevels, defaultPackageCount))
+        }
+        const stemConfigs = getStemPlanConfigs(orderItemsFromPreOrder, productMap)
+        if (stemConfigs.length > 0) setSelectedStemByPlan(buildAutoSelectedStemByPlan(stemConfigs))
+      }
     }
 
     if (po) setPreOrder(po)
-    if (productRows) {
-      const map = {}
-      productRows.forEach(product => { map[product.id] = product.name })
-      setProductsById(map)
-    }
 
     if (formData.status === 'tamamlandi' || formData.status === 'okul_formu_guncelledi' || formData.status === 'onaylandi') setSubmitted(true)
     setLoading(false)
@@ -541,6 +630,7 @@ export default function SchoolForm({ token }) {
     return selectablePackageCounts.includes(selectedCount) ? selectedCount : null
   }
   const setLevelPackageCount = (level, nextCountRaw) => {
+    if (isAutoFilledMode) return
     const nextCount = parseInt(nextCountRaw, 10)
     if (!selectablePackageCounts.includes(nextCount)) {
       setSelectedPackageByLevel(prev => {
@@ -561,6 +651,7 @@ export default function SchoolForm({ token }) {
   }
   const getSelectedStemValue = (planKey, shipmentKey) => selectedStemByPlan[planKey]?.[shipmentKey] || ''
   const setStemSelection = (planKey, shipmentKey, activityName) => {
+    if (isAutoFilledMode) return
     setSelectedStemByPlan(prev => ({
       ...prev,
       [planKey]: {
@@ -608,9 +699,16 @@ export default function SchoolForm({ token }) {
       .filter(([, activities]) => (activities || []).length > 0)
   )
 
-  const addClassItem = () => setClassItems(prev => [...prev, { grade: '1. Sınıf', branch: '', teacher: '', teacher_email: '', teacher_phone: '', qty: '' }])
-  const removeClassItem = (idx) => setClassItems(prev => prev.filter((_, i) => i !== idx))
+  const addClassItem = () => {
+    if (isAutoFilledMode) return
+    setClassItems(prev => [...prev, { grade: '1. Sınıf', branch: '', teacher: '', teacher_email: '', teacher_phone: '', qty: '' }])
+  }
+  const removeClassItem = (idx) => {
+    if (isAutoFilledMode) return
+    setClassItems(prev => prev.filter((_, i) => i !== idx))
+  }
   const updateClassItem = (idx, field, value) => {
+    if (isAutoFilledMode) return
     setClassItems(prev => { const next = [...prev]; next[idx] = { ...next[idx], [field]: value }; return next })
   }
   const getActivityCount = (grade, activityName) => {
@@ -618,6 +716,7 @@ export default function SchoolForm({ token }) {
     return selected.filter(name => name === activityName).length
   }
   const setActivityCount = (grade, activityName, nextCount) => {
+    if (isAutoFilledMode) return
     setSelectedActivitiesByLevel(prev => {
       const current = prev[grade] || []
       const availableOptions = getActivityOptionsForLevel(grade)
@@ -648,14 +747,16 @@ export default function SchoolForm({ token }) {
     if (isApproved) { alert('Bu form bayi tarafından onaylandı, artık güncellenemez.'); return }
     const validItems = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
     if (validItems.length === 0) { alert('En az bir sınıf satırı doldurulmalıdır!'); return }
-    const invalidTeacherInfoRow = validItems.find(i =>
-      !String(i.teacher || '').trim() ||
-      !String(i.teacher_email || '').trim() ||
-      !String(i.teacher_phone || '').trim()
-    )
-    if (invalidTeacherInfoRow) {
-      alert(`${invalidTeacherInfoRow.grade || 'Seçili sınıf'} satırında öğretmen adı, mail ve telefon zorunludur!`)
-      return
+    if (!isAutoFilledMode) {
+      const invalidTeacherInfoRow = validItems.find(i =>
+        !String(i.teacher || '').trim() ||
+        !String(i.teacher_email || '').trim() ||
+        !String(i.teacher_phone || '').trim()
+      )
+      if (invalidTeacherInfoRow) {
+        alert(`${invalidTeacherInfoRow.grade || 'Seçili sınıf'} satırında öğretmen adı, mail ve telefon zorunludur!`)
+        return
+      }
     }
     if (qtyMismatchMessage) {
       alert(qtyMismatchMessage)
@@ -719,8 +820,10 @@ export default function SchoolForm({ token }) {
     await supabase.from('school_form_items').delete().eq('form_id', form.id)
     const classRowsToSave = validItems.map(i => ({
       form_id: form.id, grade: i.grade, branch: i.branch,
-      teacher: i.teacher, teacher_email: i.teacher_email,
-      teacher_phone: i.teacher_phone, qty: parseInt(i.qty)
+      teacher: String(i.teacher || '').trim() || (isAutoFilledMode ? 'Otomatik' : ''),
+      teacher_email: String(i.teacher_email || '').trim() || (isAutoFilledMode ? '-' : ''),
+      teacher_phone: String(i.teacher_phone || '').trim() || (isAutoFilledMode ? '-' : ''),
+      qty: parseInt(i.qty)
     }))
     const selectedPackageActivityRows = shouldShowPackageSelection
       ? activeLevels.flatMap(level => {
@@ -873,7 +976,9 @@ export default function SchoolForm({ token }) {
           <div style={{ ...S.card, borderLeft: '4px solid ' + COLORS.yellow }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: COLORS.primary, marginBottom: 6 }}>{packageTitleText}</div>
             <div style={{ fontSize: 13, color: '#666' }}>
-              {shouldShowPackageSelection
+              {isAutoFilledMode
+                ? "Sınıf seviyeleri ve ürün seçimleri sipariş adetlerine göre otomatik dolduruldu. Sadece kurum bilgilerini kontrol edip formu gönderiniz."
+                : shouldShowPackageSelection
                 ? packageSelectionInfoText
                 : "16'lı pakette tüm ürünler dahil edilir; aşağıda ürün listesi seçimsiz olarak gösterilir."}
             </div>
@@ -919,8 +1024,13 @@ export default function SchoolForm({ token }) {
         <div style={S.card}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary }}>Sınıf Dağılımı</div>
-            <button style={{ ...S.btn(COLORS.teal), fontSize: 12, padding: '7px 14px' }} onClick={addClassItem}>+ Sınıf Ekle</button>
+            <button style={{ ...S.btn(COLORS.teal), fontSize: 12, padding: '7px 14px', opacity: isAutoFilledMode ? 0.6 : 1, cursor: isAutoFilledMode ? 'not-allowed' : 'pointer' }} onClick={addClassItem} disabled={isAutoFilledMode}>+ Sınıf Ekle</button>
           </div>
+          {isAutoFilledMode && (
+            <div style={{ marginTop: -8, marginBottom: 12, fontSize: 12, color: '#666' }}>
+              Sınıf seviyeleri ön sipariş adetlerine göre otomatik yüklendi; bu alanda düzenleme kapalıdır.
+            </div>
+          )}
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
               <thead>
@@ -938,27 +1048,27 @@ export default function SchoolForm({ token }) {
                 {classItems.map((item, idx) => (
                   <tr key={idx} style={{ background: idx % 2 === 0 ? '#fff' : '#faf6ff' }}>
                     <td style={S.td}>
-                      <select style={{ ...S.select, fontSize: 12, padding: '7px 8px' }} value={item.grade} onChange={e => updateClassItem(idx, 'grade', e.target.value)}>
+                      <select style={{ ...S.select, fontSize: 12, padding: '7px 8px', background: isAutoFilledMode ? '#f3f4f6' : '#fff' }} value={item.grade} onChange={e => updateClassItem(idx, 'grade', e.target.value)} disabled={isAutoFilledMode}>
                         {GRADES.map(g => <option key={g} value={g}>{g}</option>)}
                       </select>
                     </td>
                     <td style={S.td}>
-                      <input style={{ ...S.input, textAlign: 'center', fontSize: 12, padding: '7px 8px' }} value={item.branch} onChange={e => updateClassItem(idx, 'branch', e.target.value)} placeholder="A" />
+                      <input style={{ ...S.input, textAlign: 'center', fontSize: 12, padding: '7px 8px', background: isAutoFilledMode ? '#f3f4f6' : '#fff' }} value={item.branch} onChange={e => updateClassItem(idx, 'branch', e.target.value)} placeholder="A" readOnly={isAutoFilledMode} />
                     </td>
                     <td style={S.td}>
-                      <input required style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher} onChange={e => updateClassItem(idx, 'teacher', e.target.value)} placeholder="Ad Soyad *" />
+                      <input required style={{ ...S.input, fontSize: 12, padding: '7px 8px', background: isAutoFilledMode ? '#f3f4f6' : '#fff' }} value={item.teacher} onChange={e => updateClassItem(idx, 'teacher', e.target.value)} placeholder="Ad Soyad *" readOnly={isAutoFilledMode} />
                     </td>
                     <td style={S.td}>
-                      <input required type="email" style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher_email} onChange={e => updateClassItem(idx, 'teacher_email', e.target.value)} placeholder="mail@okul.com *" />
+                      <input required type="email" style={{ ...S.input, fontSize: 12, padding: '7px 8px', background: isAutoFilledMode ? '#f3f4f6' : '#fff' }} value={item.teacher_email} onChange={e => updateClassItem(idx, 'teacher_email', e.target.value)} placeholder="mail@okul.com *" readOnly={isAutoFilledMode} />
                     </td>
                     <td style={S.td}>
-                      <input required style={{ ...S.input, fontSize: 12, padding: '7px 8px' }} value={item.teacher_phone} onChange={e => updateClassItem(idx, 'teacher_phone', e.target.value)} placeholder="0555... *" />
+                      <input required style={{ ...S.input, fontSize: 12, padding: '7px 8px', background: isAutoFilledMode ? '#f3f4f6' : '#fff' }} value={item.teacher_phone} onChange={e => updateClassItem(idx, 'teacher_phone', e.target.value)} placeholder="0555... *" readOnly={isAutoFilledMode} />
                     </td>
                     <td style={S.td}>
-                      <input type="number" min="0" style={{ ...S.input, textAlign: 'center', fontSize: 12, padding: '7px 8px' }} value={item.qty} onChange={e => updateClassItem(idx, 'qty', e.target.value)} placeholder="0" />
+                      <input type="number" min="0" style={{ ...S.input, textAlign: 'center', fontSize: 12, padding: '7px 8px', background: isAutoFilledMode ? '#f3f4f6' : '#fff' }} value={item.qty} onChange={e => updateClassItem(idx, 'qty', e.target.value)} placeholder="0" readOnly={isAutoFilledMode} />
                     </td>
                     <td style={S.td}>
-                      {idx > 0 && <button style={{ ...S.btn('#ef4444'), padding: '5px 8px', fontSize: 11 }} onClick={() => removeClassItem(idx)}>✕</button>}
+                      {idx > 0 && !isAutoFilledMode && <button style={{ ...S.btn('#ef4444'), padding: '5px 8px', fontSize: 11 }} onClick={() => removeClassItem(idx)}>✕</button>}
                     </td>
                   </tr>
                 ))}
@@ -979,8 +1089,21 @@ export default function SchoolForm({ token }) {
             <div style={{ marginTop: 6, fontSize: 12, color: COLORS.orange }}>{qtyMismatchMessage}</div>
           )}
         </div>
+        {isAutoFilledMode && selectedActivitySummary.some(item => item.activities.length > 0) && (
+          <div style={S.card}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 8 }}>Otomatik Ürün Seçimleri</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>Ürün seçimleri sipariş paketine göre otomatik atandı.</div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {selectedActivitySummary.map(item => (
+                <div key={`auto-${item.level}`} style={{ fontSize: 13, color: '#333' }}>
+                  <strong>{item.level}:</strong> {(item.activities || []).length > 0 ? item.activities.join(', ') : '-'}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-        {shouldShowPackageSelection && (
+        {!isAutoFilledMode && shouldShowPackageSelection && (
           <div style={S.card}>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>{packageTitleText} Ürün Listesi</div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 14 }}>{packageSelectionInfoText}</div>
@@ -1058,7 +1181,7 @@ export default function SchoolForm({ token }) {
             )}
           </div>
         )}
-        {shouldShowReadOnlyProductList && (
+        {!isAutoFilledMode && shouldShowReadOnlyProductList && (
           <div style={S.card}>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>16'lı Keşif Kutusu Ürün Listesi</div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 14 }}>Bu pakette seçim gerekmez; aşağıdaki ürünlerin tamamı otomatik dahil edilir.</div>
@@ -1087,7 +1210,7 @@ export default function SchoolForm({ token }) {
             )}
           </div>
         )}
-        {shouldShowStemSelection && (
+        {!isAutoFilledMode && shouldShowStemSelection && (
           <div style={S.card}>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>STEM Ürün Seçimleri</div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 14 }}>Her sevkiyat için 1 etkinlik seçiniz.</div>

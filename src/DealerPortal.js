@@ -130,6 +130,26 @@ const parseExcelQty = (value) => {
   if (!Number.isFinite(parsed)) return 0
   return Math.max(0, Math.round(parsed))
 }
+const parseExcelAmount = (value) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0
+  let normalized = String(value || '').trim()
+  if (!normalized) return 0
+  normalized = normalized.replace(/[₺TLtl]/g, '').replace(/\s+/g, '')
+  const hasComma = normalized.includes(',')
+  const hasDot = normalized.includes('.')
+  if (hasComma && hasDot) {
+    if (normalized.lastIndexOf(',') > normalized.lastIndexOf('.')) normalized = normalized.replace(/\./g, '').replace(',', '.')
+    else normalized = normalized.replace(/,/g, '')
+  } else if (hasComma) normalized = normalized.replace(/\./g, '').replace(',', '.')
+  else if ((normalized.match(/\./g) || []).length > 1) {
+    const pieces = normalized.split('.')
+    const decimal = pieces.pop()
+    normalized = `${pieces.join('')}.${decimal}`
+  }
+  const parsed = parseFloat(normalized.replace(/[^0-9.-]/g, ''))
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
 const getExcelLabelValue = (rows = [], labels = []) => {
   const normalizedLabels = labels.map(normalizeImportText).filter(Boolean)
   for (const row of rows) {
@@ -155,6 +175,15 @@ const isExcelQtyHeader = (cellValue) => {
     normalized.includes('sayi')
   )
 }
+const findExcelDiscountedPriceColumn = (normalizedRow = []) => {
+  const discountedIdx = normalizedRow.findIndex(cell => cell.includes('indirimli'))
+  if (discountedIdx >= 0) return discountedIdx
+  const corporatePriceIdx = normalizedRow.findIndex(cell => cell.includes('kurumsal') && (cell.includes('tutar') || cell.includes('fiyat')))
+  if (corporatePriceIdx >= 0) return corporatePriceIdx
+  const unitPriceIdx = normalizedRow.findIndex(cell => cell.includes('birim') && cell.includes('fiyat'))
+  if (unitPriceIdx >= 0) return unitPriceIdx
+  return -1
+}
 const findExcelHeader = (rows = []) => {
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex] || []
@@ -166,7 +195,8 @@ const findExcelHeader = (rows = []) => {
       .filter(idx => idx >= 0)
     if (classIndex < 0 || productIndex < 0 || qtyCandidates.length === 0) continue
     const qtyIndex = qtyCandidates.find(idx => normalizedRow[idx].includes('siparis')) ?? qtyCandidates[0]
-    return { rowIndex, classIndex, productIndex, qtyIndex }
+    const priceIndex = findExcelDiscountedPriceColumn(normalizedRow)
+    return { rowIndex, classIndex, productIndex, qtyIndex, priceIndex }
   }
   return null
 }
@@ -255,6 +285,7 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
     const classCell = String(row[header.classIndex] || '').trim()
     const productCell = String(row[header.productIndex] || '').trim()
     const qty = parseExcelQty(row[header.qtyIndex])
+    const unitPriceFromExcel = header.priceIndex >= 0 ? parseExcelAmount(row[header.priceIndex]) : 0
     const classNormalized = normalizeImportText(classCell)
 
     if (classNormalized.includes('genel toplam')) break
@@ -263,8 +294,12 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
 
     sourceLineCount += 1
     const productKey = normalizeImportText(productCell) || `${productCell}-${rowIndex}`
-    const currentProduct = productDemandMap.get(productKey) || { label: productCell, qty: 0 }
+    const currentProduct = productDemandMap.get(productKey) || { label: productCell, qty: 0, priceTotal: 0, priceQty: 0 }
     currentProduct.qty += qty
+    if (unitPriceFromExcel > 0) {
+      currentProduct.priceTotal += unitPriceFromExcel * qty
+      currentProduct.priceQty += qty
+    }
     productDemandMap.set(productKey, currentProduct)
 
     const mappedGrade = mapExcelGrade(classCell)
@@ -288,14 +323,27 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
     const current = itemMap.get(matchedProduct.id) || {
       product_id: String(matchedProduct.id),
       qty: 0,
-      unit_price: parseAmount(getPrice(matchedProduct.id)),
+      priceTotal: 0,
+      priceQty: 0,
+      fallbackUnitPrice: parseAmount(getPrice(matchedProduct.id)),
     }
     current.qty += demand.qty
+    if ((demand.priceQty || 0) > 0) {
+      current.priceTotal += demand.priceTotal || 0
+      current.priceQty += demand.priceQty || 0
+    }
     itemMap.set(matchedProduct.id, current)
   }
 
   const items = Array.from(itemMap.values())
-    .map(item => ({ ...item, qty: String(item.qty) }))
+    .map(item => {
+      const unitPrice = item.priceQty > 0 ? item.priceTotal / item.priceQty : item.fallbackUnitPrice
+      return {
+        product_id: item.product_id,
+        qty: String(item.qty),
+        unit_price: Math.round((parseAmount(unitPrice) || 0) * 100) / 100,
+      }
+    })
     .sort((a, b) => parseInt(a.product_id, 10) - parseInt(b.product_id, 10))
   const classForecastRows = FORECAST_GRADES
     .map(grade => ({ grade, qty: gradeQtyMap.get(grade) || 0 }))
