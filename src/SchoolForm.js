@@ -907,13 +907,32 @@ export default function SchoolForm({ token }) {
           <div style={{ fontSize: 28, fontWeight: 800, color: COLORS.primary }}>{classItems.reduce((s, i) => s + (parseInt(i.qty) || 0), 0)}</div>
         </div>
         {(shouldShowPackageSelection || shouldShowReadOnlyProductList || shouldShowStemSelection) && selectedActivitySummary.some(item => item.activities.length > 0) && (
-          <div style={{ marginTop: 12, padding: 14, background: '#fff', borderRadius: 12, boxShadow: '0 2px 12px rgba(0,0,0,0.08)' }}>
-            <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>Seviye Bazlı Ürün Listesi</div>
-            {selectedActivitySummary.map(item => (
-              <div key={item.level} style={{ fontSize: 13, color: '#333', fontWeight: 600, marginBottom: 4 }}>
-                {item.level}: {item.activities.length > 0 ? item.activities.join(', ') : '-'}
-              </div>
-            ))}
+          <div style={{ marginTop: 12, textAlign: 'left', padding: 14, background: 'linear-gradient(180deg, #ffffff 0%, #faf7ff 100%)', border: '1px solid #ebe3ff', borderRadius: 14, boxShadow: '0 8px 24px rgba(140,71,156,0.12)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 18 }}>🧩</span>
+              <div style={{ fontSize: 14, color: COLORS.primary, fontWeight: 800 }}>Seviye Bazlı Ürün Listesi</div>
+            </div>
+            <div style={{ fontSize: 12, color: '#7b7790', marginBottom: 10 }}>
+              Formunuza kaydedilen ürünler aşağıda seviyelere göre listelenir.
+            </div>
+            <div style={{ display: 'grid', gap: 8, maxHeight: isMobile ? 260 : 320, overflowY: 'auto', paddingRight: 2 }}>
+              {selectedActivitySummary.map(item => (
+                <div key={item.level} style={{ background: '#fff', border: '1px solid #eee8ff', borderRadius: 10, padding: '9px 10px' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, fontWeight: 800, color: COLORS.primary, background: '#f3edff', borderRadius: 999, padding: '4px 8px', marginBottom: 8 }}>
+                    {item.level}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {item.activities.length > 0 ? item.activities.map((activity, idx) => (
+                      <span key={`${item.level}-${activity}-${idx}`} style={{ fontSize: 11, fontWeight: 700, color: '#4a4660', background: '#f8f6ff', border: '1px solid #e8e0ff', borderRadius: 999, padding: '4px 8px' }}>
+                        {activity}
+                      </span>
+                    )) : (
+                      <span style={{ fontSize: 12, color: '#999' }}>Seçim yok</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
         <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
