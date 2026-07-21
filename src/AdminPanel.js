@@ -20,13 +20,11 @@ const ADMIN_GUIDE_DISMISS_KEY = 'kk_admin_guide_dismissed'
 const ACCOUNTING_ALLOWED_NAV_IDS = ['dashboard', 'payments', 'checks']
 const toFilterText = (value) => String(value || '').toLocaleLowerCase('tr-TR')
 const parseMoney = (value) => parseFloat(value) || 0
-const STUDENT_CARGO_FEE = 100
 const PREORDER_FORECAST_MARKER = '[[CLASS_FORECAST]]'
-const getPreOrderItemQtyTotal = (preOrder) => (preOrder?.pre_order_items || []).reduce((sum, item) => sum + (parseInt(item?.qty, 10) || 0), 0)
 const getPreOrderAutoCargoFee = (preOrder) => {
+  // Disable automatic per-student cargo fallback in admin as well. Use explicit cargo_fee only.
   const explicitCargoFee = parseMoney(preOrder?.cargo_fee)
-  if (explicitCargoFee > 0) return explicitCargoFee
-  return getPreOrderItemQtyTotal(preOrder) * STUDENT_CARGO_FEE
+  return explicitCargoFee > 0 ? explicitCargoFee : 0
 }
 const sanitizeForecastRows = (rows = []) => (rows || [])
   .map(row => ({
@@ -811,21 +809,21 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
   const convertToOrder = async (po) => {
     const items = po.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
-    const autoCargoFee = getPreOrderAutoCargoFee(po)
+    const cargoFee = getPreOrderAutoCargoFee(po)
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: autoCargoFee, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', note: po.note, status: 'beklemede' }])
+    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', note: po.note, status: 'beklemede' }])
     for (const item of items) {
       await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
     }
     const dealer = dealers.find(d => d.id === po.dealer_id)
     await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', po.dealer_id)
-    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: autoCargoFee }).eq('id', po.id)
+    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: cargoFee }).eq('id', po.id)
     await logAdminAction('preorder_converted_to_order', `preorder:${po.id}`, {
       order_id: orderId,
       dealer_id: po.dealer_id,
       school_name: po.school_name,
       total,
-      cargo_fee: autoCargoFee,
+      cargo_fee: cargoFee,
     })
     setDetail(null); loadAll()
     alert('Sipariş oluşturuldu: ' + orderId)
@@ -903,7 +901,7 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
                   <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}>{fmt(detailSubtotal)}</td>
                 </tr>
                 <tr style={{ background: '#f8f4ff' }}>
-                  <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>KARGO (kişi başı {fmt(STUDENT_CARGO_FEE)}):</td>
+                  <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>KARGO (manuel):</td>
                   <td style={{ ...S.td, fontWeight: 800, color: COLORS.teal }}>{fmt(detailCargoFee)}</td>
                 </tr>
                 <tr style={{ background: '#f8f4ff' }}>
