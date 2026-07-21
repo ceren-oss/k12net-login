@@ -15,7 +15,6 @@ const fmt = (n) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency:
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('tr-TR') : '-'
 const VAT_RATE = 0.2
 const VAT_TAXABLE_PORTION = 1 / 3
-const STUDENT_CARGO_FEE = 100
 const getVatAmount = (amount) => (parseFloat(amount) || 0) * VAT_RATE * VAT_TAXABLE_PORTION
 const getAmountWithVat = (amount) => (amount || 0) + getVatAmount(amount)
 
@@ -68,19 +67,12 @@ const getPreOrderSubtotal = (preOrder) => (preOrder?.pre_order_items || []).redu
   (sum, item) => sum + ((parseInt(item?.qty, 10) || 0) * parseAmount(item?.unit_price)),
   0
 )
-const getAutoCargoFeeByStudentQty = (studentQty) => (parseInt(studentQty, 10) || 0) * STUDENT_CARGO_FEE
-const getTeacherSetCountFromRows = (rows = []) => {
-  const validRows = (rows || []).filter(row => (parseInt(row?.qty, 10) || 0) > 0)
-  const teacherRowsCount = validRows.filter(row => String(row?.teacher || '').trim()).length
-  return teacherRowsCount > 0 ? teacherRowsCount : validRows.length
-}
 const sanitizeForecastRows = (rows = []) => (rows || [])
   .map(row => ({
     grade: row?.grade || FORECAST_GRADES[0],
     qty: parseInt(row?.qty, 10) || 0,
   }))
   .filter(row => row.grade && row.qty > 0)
-const getForecastQtyTotal = (rows = []) => sanitizeForecastRows(rows).reduce((sum, row) => sum + (row.qty || 0), 0)
 const splitPreOrderNote = (rawNote) => {
   const note = String(rawNote || '')
   const markerIndex = note.indexOf(PREORDER_FORECAST_MARKER)
@@ -101,14 +93,11 @@ const buildPreOrderNote = (rawNote, forecastRows = []) => {
   const payload = `${PREORDER_FORECAST_MARKER}${JSON.stringify(normalizedRows)}`
   return userNote ? `${userNote}\n\n${payload}` : payload
 }
-const getForecastRowsFromPreOrder = (preOrder) => splitPreOrderNote(preOrder?.note).forecastRows
-const getPreOrderForecastQty = (preOrder) => getForecastQtyTotal(getForecastRowsFromPreOrder(preOrder))
 const getPreOrderCargoFee = (preOrder) => {
+  // Only use explicit cargo_fee when provided. Disable automatic per-student fallback.
   const explicitCargoFee = parseAmount(preOrder?.cargo_fee)
-  if (explicitCargoFee > 0) return explicitCargoFee
-  return getAutoCargoFeeByStudentQty(getPreOrderForecastQty(preOrder))
+  return explicitCargoFee > 0 ? explicitCargoFee : 0
 }
-const getPreOrderTotalWithCargo = (preOrder) => getPreOrderSubtotal(preOrder) + getPreOrderCargoFee(preOrder)
 const generatePreOrderId = (seed = 0) => `ON-${(Date.now() + seed).toString().slice(-8)}${Math.random().toString(36).slice(2, 5).toUpperCase()}`
 const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
 const getOrderTeacherSetCount = (order) => parseInt(order?.free_qty, 10) || 0
@@ -504,15 +493,12 @@ export default function DealerPortal({ dealer, onLogout }) {
         teacher: item.teacher || '',
         qty: parseInt(item.qty) || 0,
       }))
-    const studentQtyTotal = classRows.reduce((sum, row) => sum + (row.qty || 0), 0)
-    const autoCargoFee = getAutoCargoFeeByStudentQty(studentQtyTotal)
-    const autoFreeQty = getTeacherSetCountFromRows(classRows)
 
     await supabase.from('orders').insert([{
       id: orderId, dealer_id: dealer.id, school_name: sf.school_name,
       season: po?.season, total, invoice_status: 'kesilmedi',
       dia_status: false, cargo_status: 'faturalanmadi', status: 'beklemede',
-      cargo_fee: autoCargoFee, free_qty: autoFreeQty,
+      cargo_fee: 0, free_qty: 0,
       note: 'Okul formu ile oluşturuldu'
     }])
     for (const item of items) {
@@ -538,7 +524,7 @@ export default function DealerPortal({ dealer, onLogout }) {
     }
     const { data: freshDealer } = await supabase.from('dealers').select('balance').eq('id', dealer.id).single()
     await supabase.from('dealers').update({ balance: (freshDealer?.balance || 0) - total }).eq('id', dealer.id)
-    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: autoCargoFee }).eq('id', po.id)
+    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: 0 }).eq('id', po.id)
     await supabase.from('school_forms').update({ status: 'onaylandi' }).eq('id', sf.id)
     loadAll()
     alert('Sipariş oluşturuldu: ' + orderId)
@@ -702,8 +688,6 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   const forecastQtyTotal = validForecastRows.reduce((sum, row) => sum + (row.qty || 0), 0)
   const hasDuplicateProductSelection = new Set(filledItems.map(item => String(item.product_id))).size !== filledItems.length
   const isForecastQtyMismatch = forecastQtyTotal !== orderQtyTotal
-  const estimatedCargoFee = getAutoCargoFeeByStudentQty(orderQtyTotal)
-  const estimatedFreeTeacherSetQty = validForecastRows.length
   const handleExcelImport = async (event) => {
     const selectedFile = event.target.files?.[0]
     event.target.value = ''
@@ -1045,8 +1029,6 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
           <div style={{ fontSize: 12, color: '#666' }}>KDV Hariç Toplam: <strong style={{ color: COLORS.primary }}>{fmt(total)}</strong></div>
           <div style={{ fontSize: 12, color: '#666' }}>KDV (1/3'e %20): <strong style={{ color: COLORS.orange }}>{fmt(totalVat)}</strong></div>
           <div style={{ fontSize: 13, color: '#333', fontWeight: 800 }}>KDV Dahil Toplam: <span style={{ color: COLORS.green }}>{fmt(totalWithVat)}</span></div>
-          <div style={{ fontSize: 12, color: '#666' }}>Tahmini Kargo (öğrenci başı {fmt(STUDENT_CARGO_FEE)}): <strong style={{ color: COLORS.teal }}>{fmt(estimatedCargoFee)}</strong></div>
-          <div style={{ fontSize: 12, color: '#666' }}>Tahmini Ücretsiz Öğretmen Seti: <strong style={{ color: COLORS.primary }}>{estimatedFreeTeacherSetQty}</strong></div>
         </div>
       </div>
       <div style={S.card}>
@@ -1139,16 +1121,10 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const detailFormActivitiesByLevel = toActivityDisplay(getFormActivitiesByLevel(detailLinkedForm))
   const detailNoteData = splitPreOrderNote(detail?.note || '')
   const detailForecastRows = detailNoteData.forecastRows
-  const detailForecastQtyTotal = detailForecastRows.reduce((sum, row) => sum + (row.qty || 0), 0)
-  const detailStudentQtyTotal = detailFormClassRows.length > 0
-    ? detailFormClassRows.reduce((sum, row) => sum + (parseInt(row.qty, 10) || 0), 0)
-    : detailForecastQtyTotal
-  const detailTeacherSetQty = detailFormClassRows.length > 0
-    ? getTeacherSetCountFromRows(detailFormClassRows)
-    : detailForecastRows.length
+  const detailTeacherSetQty = 0
   const detailCargoFee = parseAmount(detail?.cargo_fee) > 0
     ? parseAmount(detail?.cargo_fee)
-    : getAutoCargoFeeByStudentQty(detailStudentQtyTotal)
+    : 0 // automatic cargo calculation disabled
   const detailTotalWithCargo = getPreOrderSubtotal(detail) + detailCargoFee
   const downloadApprovedForm = (schoolForm) => {
     downloadSchoolFormReport({
@@ -1195,12 +1171,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     const items = po.pre_order_items || []
     return sum + items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
   }, 0)
-  const getPreOrderTeacherSetQty = (preOrder) => {
-    const linkedForm = schoolForms.find(sf => sf.pre_order_id === preOrder?.id)
-    const classRows = getFormClassRows(linkedForm)
-    if (classRows.length > 0) return getTeacherSetCountFromRows(classRows)
-    return getForecastRowsFromPreOrder(preOrder).length
-  }
+  const getPreOrderTeacherSetQty = () => 0
   const filteredTotalVat = getVatAmount(filteredTotal)
   const filteredTotalWithVat = getAmountWithVat(filteredTotal)
   const filteredCargoTotal = filteredPreOrders.reduce((sum, po) => sum + getPreOrderCargoFee(po), 0)
@@ -1441,7 +1412,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               <td colSpan={3} style={S.td}></td>
             </tr>
             <tr style={{ background: '#f8f4ff' }}>
-              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>TOPLAM KARGO (kişi başı {fmt(STUDENT_CARGO_FEE)}):</td>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>TOPLAM KARGO (manuel):</td>
               <td style={{ ...S.td, fontWeight: 800, color: COLORS.teal }}><strong>{fmt(filteredCargoTotal)}</strong></td>
               <td colSpan={3} style={S.td}></td>
             </tr>
@@ -1630,7 +1601,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 <strong>{fmt(getPreOrderSubtotal(detail))}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
-                <span>Kargo Bedeli (öğrenci başı {fmt(STUDENT_CARGO_FEE)})</span>
+                <span>Kargo Bedeli</span>
                 <strong>{fmt(detailCargoFee)}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
