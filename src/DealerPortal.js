@@ -93,14 +93,10 @@ const buildPreOrderNote = (rawNote, forecastRows = []) => {
   const payload = `${PREORDER_FORECAST_MARKER}${JSON.stringify(normalizedRows)}`
   return userNote ? `${userNote}\n\n${payload}` : payload
 }
-const getPreOrderCargoFee = (preOrder) => {
-  // Only use explicit cargo_fee when provided. Disable automatic per-student fallback.
-  const explicitCargoFee = parseAmount(preOrder?.cargo_fee)
-  return explicitCargoFee > 0 ? explicitCargoFee : 0
-}
+const getPreOrderCargoFee = () => 0
 const generatePreOrderId = (seed = 0) => `ON-${(Date.now() + seed).toString().slice(-8)}${Math.random().toString(36).slice(2, 5).toUpperCase()}`
 const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
-const getOrderTeacherSetCount = (order) => parseInt(order?.free_qty, 10) || 0
+const getOrderTeacherSetCount = () => 0
 const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
 const normalizeImportText = (value) => String(value || '')
   .toLocaleLowerCase('tr-TR')

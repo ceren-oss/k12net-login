@@ -21,11 +21,7 @@ const ACCOUNTING_ALLOWED_NAV_IDS = ['dashboard', 'payments', 'checks']
 const toFilterText = (value) => String(value || '').toLocaleLowerCase('tr-TR')
 const parseMoney = (value) => parseFloat(value) || 0
 const PREORDER_FORECAST_MARKER = '[[CLASS_FORECAST]]'
-const getPreOrderAutoCargoFee = (preOrder) => {
-  // Disable automatic per-student cargo fallback in admin as well. Use explicit cargo_fee only.
-  const explicitCargoFee = parseMoney(preOrder?.cargo_fee)
-  return explicitCargoFee > 0 ? explicitCargoFee : 0
-}
+const getPreOrderAutoCargoFee = () => 0
 const sanitizeForecastRows = (rows = []) => (rows || [])
   .map(row => ({
     grade: row?.grade || '',
