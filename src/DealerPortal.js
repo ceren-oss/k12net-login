@@ -1121,7 +1121,6 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const detailCargoFee = parseAmount(detail?.cargo_fee) > 0
     ? parseAmount(detail?.cargo_fee)
     : 0 // automatic cargo calculation disabled
-  const detailTotalWithCargo = getPreOrderSubtotal(detail) + detailCargoFee
   const downloadApprovedForm = (schoolForm) => {
     downloadSchoolFormReport({
       form: schoolForm,
@@ -1149,11 +1148,12 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const filteredPreOrders = preOrders.filter(po => {
     const items = po.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+    const totalWithVat = getAmountWithVat(total)
     const sf = schoolForms.find(form => form.pre_order_id === po.id)
     const formStatusLabel = sf ? (FORM_STATUS[sf.status]?.label || sf.status || '') : 'Form Yok'
     const statusLabel = STATUS[po.status]?.label || po.status || ''
-    const totalDisplay = fmt(total)
-    const totalRaw = String(total || 0)
+    const totalDisplay = fmt(totalWithVat)
+    const totalRaw = String(totalWithVat || 0)
 
     if (filters.id && !normalizeText(po.id).includes(normalizeText(filters.id))) return false
     if (filters.school && !normalizeText(po.school_name).includes(normalizeText(filters.school))) return false
@@ -1168,10 +1168,9 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     return sum + items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
   }, 0)
   const getPreOrderTeacherSetQty = () => 0
-  const filteredTotalVat = getVatAmount(filteredTotal)
   const filteredTotalWithVat = getAmountWithVat(filteredTotal)
   const filteredCargoTotal = filteredPreOrders.reduce((sum, po) => sum + getPreOrderCargoFee(po), 0)
-  const filteredGrandTotal = filteredTotal + filteredCargoTotal
+  const filteredGrandTotal = filteredTotalWithVat + filteredCargoTotal
   const filteredTeacherSetTotal = filteredPreOrders.reduce((sum, po) => sum + getPreOrderTeacherSetQty(po), 0)
   const openEdit = (po) => {
     const { userNote, forecastRows } = splitPreOrderNote(po.note)
@@ -1337,12 +1336,13 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
           ) : filteredPreOrders.map(po => {
             const items = po.pre_order_items || []
             const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+            const totalWithVat = getAmountWithVat(total)
             const sf = schoolForms.find(form => form.pre_order_id === po.id)
             const isEditable = po.status === 'on_siparis'
             const canManageForm = po.status === 'on_siparis' || po.status === 'kesinlesti'
             const cargoFee = getPreOrderCargoFee(po)
             const teacherSetQty = getPreOrderTeacherSetQty(po)
-            const totalWithCargo = total + cargoFee
+            const totalWithCargo = totalWithVat + cargoFee
             return (
               <tr key={po.id}>
                 <td style={S.td}><strong style={{ color: COLORS.primary }}>{po.id}</strong></td>
@@ -1350,7 +1350,8 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 <td style={S.td}>{po.season}</td>
                 <td style={S.td}>
                   <strong>{fmt(totalWithCargo)}</strong>
-                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam: {fmt(total)}</div>
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam (KDV Hariç): {fmt(total)}</div>
+                  <div style={{ fontSize: 11, color: '#666' }}>Ara Toplam (KDV Dahil): {fmt(totalWithVat)}</div>
                   <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(cargoFee)}</div>
                   <div style={{ fontSize: 11, color: '#666' }}>Ücretsiz Set: {teacherSetQty}</div>
                 </td>
@@ -1593,8 +1594,12 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             </table>
             <div style={{ marginTop: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
-                <span>Ara Toplam</span>
+                <span>Ara Toplam (KDV Hariç)</span>
                 <strong>{fmt(getPreOrderSubtotal(detail))}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                <span>Ara Toplam (KDV Dahil)</span>
+                <strong>{fmt(getAmountWithVat(getPreOrderSubtotal(detail)))}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
                 <span>Kargo Bedeli</span>
@@ -1606,7 +1611,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
                 <span>Kargo Dahil Toplam</span>
-                <span>{fmt(detailTotalWithCargo)}</span>
+                <span>{fmt(getAmountWithVat(getPreOrderSubtotal(detail)) + detailCargoFee)}</span>
               </div>
               {detailNoteData.userNote && (
                 <div style={{ marginTop: 10, fontSize: 12, color: '#444' }}>
