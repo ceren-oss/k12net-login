@@ -1319,7 +1319,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
           <thead>
             <tr>
-              <th style={S.th}>No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Toplam</th><th style={S.th}>Form Durumu</th><th style={S.th}>Durum</th><th style={S.th}></th>
+              <th style={S.th}>No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Toplam (KDV Dahil)</th><th style={S.th}>Form Durumu</th><th style={S.th}>Durum</th><th style={S.th}></th>
             </tr>
             <tr style={{ background: '#faf6ff' }}>
               <th style={{ ...S.td, padding: 8 }}><input style={{ ...S.input, padding: '6px 8px', fontSize: 12, borderWidth: 1 }} placeholder="Filtre..." value={filters.id} onChange={e => updateFilter('id', e.target.value)} /></th>
@@ -1610,7 +1610,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 <strong>{detailTeacherSetQty}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
-                <span>Kargo Dahil Toplam</span>
+                <span>Kargo Dahil Toplam (KDV Dahil)</span>
                 <span>{fmt(getAmountWithVat(getPreOrderSubtotal(detail)) + detailCargoFee)}</span>
               </div>
               {detailNoteData.userNote && (
