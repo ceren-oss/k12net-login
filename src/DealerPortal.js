@@ -111,7 +111,20 @@ const normalizeImportText = (value) => String(value || '')
   .trim()
 const parseExcelQty = (value) => {
   if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0
-  const normalized = String(value || '').replace(/\./g, '').replace(',', '.')
+  let normalized = String(value || '').trim()
+  if (!normalized) return 0
+  normalized = normalized.replace(/\s+/g, '')
+  const hasComma = normalized.includes(',')
+  const hasDot = normalized.includes('.')
+  if (hasComma && hasDot) {
+    if (normalized.lastIndexOf(',') > normalized.lastIndexOf('.')) normalized = normalized.replace(/\./g, '').replace(',', '.')
+    else normalized = normalized.replace(/,/g, '')
+  } else if (hasComma) normalized = normalized.replace(/\./g, '').replace(',', '.')
+  else if ((normalized.match(/\./g) || []).length > 1) {
+    const pieces = normalized.split('.')
+    const decimal = pieces.pop()
+    normalized = `${pieces.join('')}.${decimal}`
+  }
   const parsed = parseFloat(normalized.replace(/[^0-9.-]/g, ''))
   if (!Number.isFinite(parsed)) return 0
   return Math.max(0, Math.round(parsed))
