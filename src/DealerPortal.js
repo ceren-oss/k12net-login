@@ -195,7 +195,8 @@ const findExcelHeader = (rows = []) => {
     if (classIndex < 0 || productIndex < 0 || qtyCandidates.length === 0) continue
     const qtyIndex = qtyCandidates.find(idx => normalizedRow[idx].includes('siparis')) ?? qtyCandidates[0]
     const priceIndex = findExcelDiscountedPriceColumn(normalizedRow)
-    return { rowIndex, classIndex, productIndex, qtyIndex, priceIndex }
+    const totalIndex = normalizedRow.findIndex(cell => cell.includes('toplam') && (cell.includes('tutar') || cell.includes('fiyat')))
+    return { rowIndex, classIndex, productIndex, qtyIndex, priceIndex, totalIndex }
   }
   return null
 }
@@ -285,11 +286,13 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
     const productCell = String(row[header.productIndex] || '').trim()
     const qty = parseExcelQty(row[header.qtyIndex])
     const unitPriceFromExcel = header.priceIndex >= 0 ? parseExcelAmount(row[header.priceIndex]) : 0
+    const rowTotalFromExcel = header.totalIndex >= 0 ? parseExcelAmount(row[header.totalIndex]) : null
     const classNormalized = normalizeImportText(classCell)
 
     if (classNormalized.includes('genel toplam')) break
     if (!classCell && !productCell && qty === 0) continue
     if (!productCell || qty <= 0) continue
+    if (header.totalIndex >= 0 && (rowTotalFromExcel || 0) <= 0) continue
 
     sourceLineCount += 1
     const productKey = normalizeImportText(productCell) || `${productCell}-${rowIndex}`
