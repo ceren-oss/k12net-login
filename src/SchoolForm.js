@@ -464,6 +464,8 @@ export default function SchoolForm({ token }) {
   const [loading, setLoading] = useState(true)
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [approving, setApproving] = useState(false)
+  const [showApprovalConfirm, setShowApprovalConfirm] = useState(false)
 
   // Okul bilgileri
   const [schoolName, setSchoolName] = useState('')
@@ -605,7 +607,7 @@ export default function SchoolForm({ token }) {
 
     if (po) setPreOrder(po)
 
-    if (formData.status === 'tamamlandi' || formData.status === 'okul_formu_guncelledi' || formData.status === 'onaylandi') setSubmitted(true)
+    if (formData.status === 'tamamlandi' || formData.status === 'okul_formu_guncelledi' || formData.status === 'form_kaydedildi' || formData.status === 'kesinlesti' || formData.status === 'onaylandi') setSubmitted(true)
     setLoading(false)
   }
   const totalQty = getClassItemsTotalQty(classItems)
@@ -622,6 +624,7 @@ export default function SchoolForm({ token }) {
   const shouldShowReadOnlyProductList = packageCounts.includes(16)
   const shouldShowStemSelection = stemPlanConfigs.length > 0
   const isApproved = form?.status === 'onaylandi'
+  const approvalDateText = preOrder?.onaylanma_tarihi ? new Date(preOrder.onaylanma_tarihi).toLocaleString('tr-TR') : ''
   const activeLevels = [...new Set(classItems.filter(i => i.grade && parseInt(i.qty) > 0).map(i => i.grade))]
   const getLevelPackageCount = (level) => {
     if (!shouldShowPackageSelection) return null
@@ -691,11 +694,55 @@ export default function SchoolForm({ token }) {
     ...stemSelectionSummary,
   ]
   const classRowsForExport = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
+  const orderTotalAmount = orderItems.reduce((sum, item) => sum + ((parseInt(item.qty, 10) || 0) * (parseFloat(item.unit_price) || 0)), 0)
   const activitiesByLevelForExport = Object.fromEntries(
     selectedActivitySummary
       .map(item => [item.level, item.activities])
       .filter(([, activities]) => (activities || []).length > 0)
   )
+  const getFormValidationError = () => {
+    if (!schoolName) return 'Kurum adı zorunludur.'
+    if (!taxNo || !taxOffice || !address || !contactName || !contactPhone || !contactEmail) return 'Vergi, adres ve yetkili bilgileri eksiksiz doldurulmalıdır.'
+    const validItems = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
+    if (validItems.length === 0) return 'En az bir sınıf satırı doldurulmalıdır.'
+    const invalidTeacherInfoRow = validItems.find(i =>
+      !String(i.branch || '').trim() ||
+      !String(i.teacher || '').trim() ||
+      !String(i.teacher_email || '').trim() ||
+      !String(i.teacher_phone || '').trim()
+    )
+    if (invalidTeacherInfoRow) return `${invalidTeacherInfoRow.grade || 'Seçili sınıf'} satırında şube, öğretmen adı, mail ve telefon zorunludur.`
+    if (qtyMismatchMessage) return qtyMismatchMessage
+    if (shouldShowPackageSelection) {
+      if (hasMultiplePackageOptions) {
+        const missingPackageLevel = activeLevels.find(level => !getLevelPackageCount(level))
+        if (missingPackageLevel) return `${missingPackageLevel} için paket tipini seçiniz.`
+      }
+      const invalidSelection = activeLevels.map(level => {
+        const availableOptions = getActivityOptionsForLevel(level)
+        if (availableOptions.length === 0) return null
+        const selectedForLevel = getValidSelectedActivities(level)
+        const requiredSelectionsForLevel = getLevelPackageCount(level) || 0
+        return selectedForLevel.length !== requiredSelectionsForLevel
+          ? { level, selected: selectedForLevel.length, required: requiredSelectionsForLevel }
+          : null
+      }).find(Boolean)
+      if (invalidSelection) return `${invalidSelection.level} için ${invalidSelection.required} ürün seçimi zorunludur (seçili: ${invalidSelection.selected}).`
+    }
+    if (shouldShowStemSelection) {
+      const invalidStemSelection = stemPlanConfigs
+        .flatMap(plan => plan.shipments.map(shipment => ({ plan, shipment })))
+        .find(({ plan, shipment }) => {
+          const selectedValue = getSelectedStemValue(plan.planKey, shipment.key)
+          return !shipment.options.includes(selectedValue)
+        })
+      if (invalidStemSelection) return `${invalidStemSelection.plan.label} / ${invalidStemSelection.shipment.label} için bir STEM etkinliği seçiniz!`
+    }
+    return ''
+  }
+  const approvalDisabledReason = isApproved
+    ? ''
+    : (!['form_kaydedildi', 'kesinlesti'].includes(form?.status) ? 'Onay için önce formu kaydedin.' : getFormValidationError())
 
   const addClassItem = () => {
     setClassItems(prev => [...prev, { grade: '1. Sınıf', branch: '', teacher: '', teacher_email: '', teacher_phone: '', qty: '' }])
@@ -739,65 +786,18 @@ export default function SchoolForm({ token }) {
   const save = async () => {
     if (!schoolName) { alert('Kurum adı zorunludur!'); return }
     if (isApproved) { alert('Bu form bayi tarafından onaylandı, artık güncellenemez.'); return }
+    const validationError = getFormValidationError()
+    if (validationError) { alert(validationError); return }
     const validItems = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
-    if (validItems.length === 0) { alert('En az bir sınıf satırı doldurulmalıdır!'); return }
-    const invalidTeacherInfoRow = validItems.find(i =>
-      !String(i.branch || '').trim() ||
-      !String(i.teacher || '').trim() ||
-      !String(i.teacher_email || '').trim() ||
-      !String(i.teacher_phone || '').trim()
-    )
-    if (invalidTeacherInfoRow) {
-      alert(`${invalidTeacherInfoRow.grade || 'Seçili sınıf'} satırında şube, öğretmen adı, mail ve telefon zorunludur!`)
-      return
-    }
-    if (qtyMismatchMessage) {
-      alert(qtyMismatchMessage)
-      return
-    }
-    if (shouldShowPackageSelection) {
-      if (hasMultiplePackageOptions) {
-        const missingPackageLevel = activeLevels.find(level => !getLevelPackageCount(level))
-        if (missingPackageLevel) {
-          alert(`${missingPackageLevel} için paket tipini seçiniz.`)
-          return
-        }
-      }
-      const invalidSelection = activeLevels.map(level => {
-        const availableOptions = getActivityOptionsForLevel(level)
-        if (availableOptions.length === 0) return null
-        const selectedForLevel = getValidSelectedActivities(level)
-        const requiredSelectionsForLevel = getLevelPackageCount(level) || 0
-        return selectedForLevel.length !== requiredSelectionsForLevel
-          ? { level, selected: selectedForLevel.length, required: requiredSelectionsForLevel }
-          : null
-      }).find(Boolean)
-      if (invalidSelection) {
-        alert(`${invalidSelection.level} için ${invalidSelection.required} ürün seçimi zorunludur (seçili: ${invalidSelection.selected}).`)
-        return
-      }
-    }
-    if (shouldShowStemSelection) {
-      const invalidStemSelection = stemPlanConfigs
-        .flatMap(plan => plan.shipments.map(shipment => ({ plan, shipment })))
-        .find(({ plan, shipment }) => {
-          const selectedValue = getSelectedStemValue(plan.planKey, shipment.key)
-          return !shipment.options.includes(selectedValue)
-        })
-      if (invalidStemSelection) {
-        alert(`${invalidStemSelection.plan.label} / ${invalidStemSelection.shipment.label} için bir STEM etkinliği seçiniz!`)
-        return
-      }
-    }
     setSaving(true)
-    const isUpdate = form?.status === 'tamamlandi' || form?.status === 'okul_formu_guncelledi'
-    const nextStatus = isUpdate ? 'okul_formu_guncelledi' : 'tamamlandi'
+    const nextStatus = 'form_kaydedildi'
 
     await supabase.from('school_forms').update({
       school_name: schoolName, tax_no: taxNo, tax_office: taxOffice,
       address, contact_name: contactName, contact_phone: contactPhone,
       contact_email: contactEmail, status: nextStatus
     }).eq('id', form.id)
+    await supabase.from('pre_orders').update({ status: nextStatus }).eq('id', form.pre_order_id)
     setForm(prev => prev ? ({
       ...prev,
       school_name: schoolName,
@@ -809,6 +809,7 @@ export default function SchoolForm({ token }) {
       contact_email: contactEmail,
       status: nextStatus,
     }) : prev)
+    setPreOrder(prev => prev ? ({ ...prev, status: nextStatus }) : prev)
 
     await supabase.from('school_form_items').delete().eq('form_id', form.id)
     const classRowsToSave = validItems.map(i => ({
@@ -875,6 +876,26 @@ export default function SchoolForm({ token }) {
     setSubmitted(true)
     setSaving(false)
   }
+  const openApprovalConfirm = () => {
+    if (isApproved) return
+    if (approvalDisabledReason) {
+      alert(approvalDisabledReason)
+      return
+    }
+    setShowApprovalConfirm(true)
+  }
+  const confirmApproval = async () => {
+    if (!form || !preOrder || isApproved || approvalDisabledReason) return
+    setApproving(true)
+    const approvedAt = new Date().toISOString()
+    await supabase.from('school_forms').update({ status: 'onaylandi' }).eq('id', form.id)
+    await supabase.from('pre_orders').update({ status: 'onaylandi', onaylanma_tarihi: approvedAt }).eq('id', form.pre_order_id)
+    setForm(prev => prev ? ({ ...prev, status: 'onaylandi' }) : prev)
+    setPreOrder(prev => prev ? ({ ...prev, status: 'onaylandi', onaylanma_tarihi: approvedAt }) : prev)
+    setApproving(false)
+    setShowApprovalConfirm(false)
+    setSubmitted(true)
+  }
 
   if (loading) return (
     <div style={{ minHeight: '100vh', background: COLORS.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -901,6 +922,19 @@ export default function SchoolForm({ token }) {
           {isApproved
             ? 'Formunuz bayi tarafından onaylandı. Aşağıdan formunuzu indirebilirsiniz.'
             : 'Bilgileriniz ilgili bayi tarafından onaylandıktan sonra siparişiniz kesinleşecektir.'}
+        </div>
+        <div style={{ marginTop: 14, textAlign: 'left', padding: 14, background: '#fff', borderRadius: 12, boxShadow: '0 2px 12px rgba(0,0,0,0.08)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>Onay Özeti</div>
+          <div style={{ fontSize: 12, color: '#444', marginBottom: 4 }}><strong>Okul:</strong> {schoolName || '-'}</div>
+          <div style={{ fontSize: 12, color: '#444', marginBottom: 4 }}><strong>Ürünler:</strong></div>
+          <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>
+            {orderItems.map((item, idx) => (
+              <div key={`approval-item-${idx}`}>• {productsById[item.product_id] || `Ürün #${item.product_id}`} — {item.qty} adet</div>
+            ))}
+          </div>
+          <div style={{ fontSize: 12, color: '#444', marginBottom: 4 }}><strong>Toplam Adet:</strong> {orderQtyTotal}</div>
+          <div style={{ fontSize: 12, color: '#444' }}><strong>Ara Toplam:</strong> {new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(orderTotalAmount || 0)}</div>
+          <div style={{ marginTop: 8, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>Onayladıktan sonra değişiklik yapılamaz.</div>
         </div>
         <div style={{ marginTop: 24, padding: 16, background: '#fff', borderRadius: 12, boxShadow: '0 2px 12px rgba(0,0,0,0.08)' }}>
           <div style={{ fontSize: 13, color: '#888' }}>Toplam Sınıf Adedi</div>
@@ -937,8 +971,25 @@ export default function SchoolForm({ token }) {
         )}
         <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
           <button style={S.btn(COLORS.teal)} onClick={handleDownloadReport}>Formu İndir</button>
+          {!isApproved && (
+            <button
+              style={{ ...S.btn(COLORS.green), opacity: approvalDisabledReason ? 0.6 : 1, cursor: approvalDisabledReason ? 'not-allowed' : 'pointer' }}
+              onClick={openApprovalConfirm}
+              disabled={Boolean(approvalDisabledReason)}
+            >
+              Siparişi Onaylıyorum
+            </button>
+          )}
           {!isApproved && <button style={S.btn(COLORS.primary)} onClick={() => setSubmitted(false)}>Formu Güncelle</button>}
         </div>
+        {!isApproved && approvalDisabledReason && (
+          <div style={{ marginTop: 10, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>{approvalDisabledReason}</div>
+        )}
+        {isApproved && (
+          <div style={{ marginTop: 12, fontSize: 13, fontWeight: 700, color: COLORS.green }}>
+            Onaylandı ✓ {approvalDateText ? `(${approvalDateText})` : ''}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1254,6 +1305,27 @@ export default function SchoolForm({ token }) {
           </button>
         </div>
       </div>
+      {showApprovalConfirm && !isApproved && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+          <div style={{ background: '#fff', borderRadius: 14, width: isMobile ? '92vw' : 560, maxWidth: '95vw', padding: 20 }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.primary, marginBottom: 10 }}>Sipariş Onayı</div>
+            <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}><strong>Okul:</strong> {schoolName || '-'}</div>
+            <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}><strong>Ürünler:</strong></div>
+            <div style={{ marginBottom: 10 }}>
+              {orderItems.map((item, idx) => (
+                <div key={`confirm-item-${idx}`} style={{ fontSize: 12, color: '#555' }}>• {productsById[item.product_id] || `Ürün #${item.product_id}`} — {item.qty} adet</div>
+              ))}
+            </div>
+            <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><strong>Toplam Adet:</strong> {orderQtyTotal}</div>
+            <div style={{ fontSize: 13, color: '#444', marginBottom: 10 }}><strong>Ara Toplam:</strong> {new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(orderTotalAmount || 0)}</div>
+            <div style={{ fontSize: 12, color: COLORS.orange, fontWeight: 700, marginBottom: 14 }}>Onayladıktan sonra değişiklik yapılamaz.</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button style={S.btn('#9ca3af')} onClick={() => setShowApprovalConfirm(false)} disabled={approving}>Vazgeç</button>
+              <button style={S.btn(COLORS.green)} onClick={confirmApproval} disabled={approving}>{approving ? 'Onaylanıyor...' : 'Siparişi Onaylıyorum'}</button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   )

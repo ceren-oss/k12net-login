@@ -98,6 +98,7 @@ const generatePreOrderId = (seed = 0) => `ON-${(Date.now() + seed).toString().sl
 const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
 const getOrderTeacherSetCount = () => 0
 const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
+const isApprovedOrder = (order) => Boolean(order?.onaylanan_siparis)
 const normalizeImportText = (value) => String(value || '')
   .toLocaleLowerCase('tr-TR')
   .replace(/ı/g, 'i')
@@ -510,6 +511,7 @@ export default function DealerPortal({ dealer, onLogout }) {
       id: orderId, dealer_id: dealer.id, school_name: sf.school_name,
       season: po?.season, total, invoice_status: 'kesilmedi',
       dia_status: false, cargo_status: 'faturalanmadi', status: 'beklemede',
+      onaylanan_siparis: true,
       cargo_fee: 0, free_qty: 0,
       note: 'Okul formu ile oluşturuldu'
     }])
@@ -547,9 +549,12 @@ export default function DealerPortal({ dealer, onLogout }) {
     { id: 'preorder', label: 'Ön Sipariş Ver' },
     { id: 'preorders', label: 'Ön Siparişlerim' },
     { id: 'orders', label: 'Siparişlerim' },
+    { id: 'approved-orders', label: 'Onaylanan Siparişler' },
     { id: 'payments', label: 'Ödemelerim' },
     { id: 'checks', label: 'Çeklerim' },
   ]
+  const regularOrders = orders.filter(order => !isApprovedOrder(order))
+  const approvedOrders = orders.filter(order => isApprovedOrder(order))
 
   return (
     <div style={{ fontFamily: 'inherit' }}>
@@ -581,7 +586,8 @@ export default function DealerPortal({ dealer, onLogout }) {
           {page === 'dashboard' && <Dashboard dealer={dealer} orders={orders} payments={payments} checks={checks} preOrders={preOrders} schoolForms={schoolForms} isMobile={isMobile} />}
           {page === 'preorder' && <PreOrder dealer={dealer} products={products} getPrice={getPrice} loadAll={loadAll} isFlexiblePriceDealer={canUseFlexiblePrice} isMobile={isMobile} />}
           {page === 'preorders' && <PreOrders preOrders={preOrders} products={products} schoolForms={schoolForms} createFormLink={createFormLink} approveForm={approveForm} updatePreOrder={updatePreOrder} deletePreOrder={deletePreOrder} getPrice={getPrice} isFlexiblePriceDealer={canUseFlexiblePrice} isMobile={isMobile} />}
-          {page === 'orders' && <Orders orders={orders} products={products} isMobile={isMobile} />}
+          {page === 'orders' && <Orders orders={regularOrders} products={products} isMobile={isMobile} />}
+          {page === 'approved-orders' && <Orders orders={approvedOrders} products={products} isMobile={isMobile} title="Onaylanan Siparişler" emptyText="Henüz onaylanan sipariş yok" />}
           {page === 'payments' && <PaymentsView payments={payments} checks={checks} isMobile={isMobile} />}
           {page === 'checks' && <ChecksView checks={checks} isMobile={isMobile} />}
         </div>
@@ -593,7 +599,7 @@ export default function DealerPortal({ dealer, onLogout }) {
 
 function Dashboard({ dealer, orders, payments, checks, preOrders, schoolForms, isMobile }) {
   const pendingChecks = checks.filter(c => c.status !== 'tahsil_edildi')
-  const pendingForms = schoolForms.filter(sf => sf.status === 'tamamlandi' || sf.status === 'okul_formu_guncelledi')
+  const pendingForms = schoolForms.filter(sf => sf.status === 'form_kaydedildi' || sf.status === 'kesinlesti' || sf.status === 'tamamlandi' || sf.status === 'okul_formu_guncelledi')
 
   return (
     <div>
@@ -1148,6 +1154,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
 
   const STATUS = {
     on_siparis: { label: 'Bekliyor', color: COLORS.orange },
+    form_kaydedildi: { label: 'Form Kaydedildi', color: COLORS.primary },
     kesinlesti: { label: 'Kesinleşti (Bayi)', color: COLORS.primary },
     siparise_donustu: { label: 'Kesinleşti', color: COLORS.green },
     iptal: { label: 'İptal', color: '#aaa' }
@@ -1155,6 +1162,8 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
 
   const FORM_STATUS = {
     bekliyor: { label: 'Form Gönderilmedi', color: '#aaa' },
+    form_kaydedildi: { label: 'Form Kaydedildi', color: COLORS.orange },
+    kesinlesti: { label: 'Onay Bekliyor', color: COLORS.orange },
     tamamlandi: { label: 'Okul Doldurdu', color: COLORS.orange },
     okul_formu_guncelledi: { label: 'Okul Formu Güncelledi', color: COLORS.pink },
     onaylandi: { label: 'Onaylandı', color: COLORS.green }
@@ -1162,6 +1171,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const normalizeText = (value) => String(value || '').toLocaleLowerCase('tr-TR')
   const updateFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }))
   const filteredPreOrders = preOrders.filter(po => {
+    if (po.status === 'siparise_donustu') return false
     const items = po.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
     const totalWithVat = getAmountWithVat(total)
@@ -1396,11 +1406,8 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                     {!isEditable && po.status === 'kesinlesti' && (
                       <span style={{ ...S.badge('#6b7280'), alignSelf: 'center' }}>Düzenleme Kilitli</span>
                     )}
-                    {sf && (sf.status === 'tamamlandi' || sf.status === 'okul_formu_guncelledi') && (
-                      <>
-                        <button style={{ ...S.btn(COLORS.yellow), fontSize: 11, padding: '5px 10px' }} onClick={() => setFormDetail(sf)}>Formu Göster</button>
-                        <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => approveForm(sf, po)}>Onayla</button>
-                      </>
+                    {sf && (sf.status === 'kesinlesti' || sf.status === 'tamamlandi' || sf.status === 'okul_formu_guncelledi') && (
+                      <button style={{ ...S.btn(COLORS.yellow), fontSize: 11, padding: '5px 10px' }} onClick={() => setFormDetail(sf)}>Formu Göster</button>
                     )}
                     {sf && sf.status === 'onaylandi' && (
                       <>
@@ -1781,7 +1788,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   )
 }
 
-function Orders({ orders, products, isMobile }) {
+function Orders({ orders, products, isMobile, title = 'Siparişlerim', emptyText = 'Henüz sipariş yok' }) {
   const [detail, setDetail] = useState(null)
   const [detailItems, setDetailItems] = useState([])
   const [detailClassRows, setDetailClassRows] = useState([])
@@ -1808,14 +1815,14 @@ function Orders({ orders, products, isMobile }) {
   }
   return (
     <div>
-      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>Siparişlerim</h2>
+      <h2 style={{ color: COLORS.primary, marginBottom: 20 }}>{title}</h2>
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
           <thead><tr>
             <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Ara Toplam</th><th style={S.th}>Kargo</th><th style={S.th}>Ücretsiz Set</th><th style={S.th}>Kargo Dahil Toplam</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
           </tr></thead>
           <tbody>{orders.length === 0 ? (
-            <tr><td colSpan={11} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Henüz sipariş yok</td></tr>
+            <tr><td colSpan={11} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>{emptyText}</td></tr>
           ) : orders.map(o => (
             <tr key={o.id}>
               <td style={S.td}><strong style={{ color: COLORS.primary }}>{o.id}</strong></td>

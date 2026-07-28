@@ -807,7 +807,7 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
     const cargoFee = getPreOrderAutoCargoFee(po)
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', note: po.note, status: 'beklemede' }])
+    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', onaylanan_siparis: true, note: po.note, status: 'beklemede' }])
     for (const item of items) {
       await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
     }
@@ -827,10 +827,13 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
 
   const STATUS = {
     on_siparis: { label: 'Ön Sipariş', color: COLORS.orange },
+    form_kaydedildi: { label: 'Form Kaydedildi', color: COLORS.primary },
     kesinlesti: { label: 'Kesinleşti (Bayi)', color: COLORS.primary },
+    onaylandi: { label: 'Onaylandı', color: COLORS.teal },
     siparise_donustu: { label: 'Siparişe Dönüştü', color: COLORS.green },
     iptal: { label: 'İptal', color: '#aaa' }
   }
+  const visiblePreOrders = preOrders.filter(po => po.status !== 'siparise_donustu')
 
   return (
     <div>
@@ -838,9 +841,9 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
           <thead><tr><th style={S.th}>No</th><th style={S.th}>Bayi</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Toplam</th><th style={S.th}>Durum</th><th style={S.th}></th></tr></thead>
-          <tbody>{preOrders.length === 0 ? (
+          <tbody>{visiblePreOrders.length === 0 ? (
             <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>Ön sipariş yok</td></tr>
-          ) : preOrders.map(po => {
+          ) : visiblePreOrders.map(po => {
             const items = po.pre_order_items || []
             const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
             const cargoFee = getPreOrderAutoCargoFee(po)
@@ -860,7 +863,7 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
                 <td style={S.td}>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => setDetail(po)}>Detay</button>
-                    {(po.status === 'on_siparis' || po.status === 'kesinlesti') && <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => convertToOrder(po)}>Siparişe Dönüştür</button>}
+                    {po.status === 'onaylandi' && <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => convertToOrder(po)}>Siparişe Dönüştür</button>}
                   </div>
                 </td>
               </tr>
@@ -937,7 +940,7 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
                 </table>
               </div>
             )}
-            {(detail.status === 'on_siparis' || detail.status === 'kesinlesti') && (
+            {detail.status === 'onaylandi' && (
               <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end', marginTop: 16 }}>
                 <button style={S.btn(COLORS.green)} onClick={() => convertToOrder(detail)}>Siparişe Dönüştür</button>
               </div>
