@@ -409,44 +409,6 @@ const buildClassRowsFromForecast = (forecastRows = []) => sanitizeForecastRows(f
   teacher_phone: '',
   qty: String(row.qty),
 }))
-const getDominantPackageCount = (orderItems = [], productsById = {}, selectablePackageCounts = []) => {
-  const selectableSet = new Set(selectablePackageCounts || [])
-  if (selectableSet.size === 0) return null
-  const qtyByCount = {}
-  for (const item of orderItems || []) {
-    const productName = productsById[item.product_id] || ''
-    const packageCount = parsePackageSizeFromName(productName)
-    if (!selectableSet.has(packageCount)) continue
-    qtyByCount[packageCount] = (qtyByCount[packageCount] || 0) + (parseInt(item.qty, 10) || 0)
-  }
-  const dominantEntry = Object.entries(qtyByCount).sort((a, b) => (b[1] || 0) - (a[1] || 0))[0]
-  return dominantEntry ? parseInt(dominantEntry[0], 10) : null
-}
-const buildAutoSelectedActivitiesByLevel = (levels = [], packageCount = 0) => {
-  if (!packageCount || packageCount < 1) return {}
-  const selectedByLevel = {}
-  for (const level of levels) {
-    const options = getActivityOptionsForLevel(level)
-    if (!options.length) continue
-    const picks = []
-    for (let idx = 0; idx < packageCount; idx += 1) picks.push(options[idx % options.length])
-    selectedByLevel[level] = picks
-  }
-  return selectedByLevel
-}
-const buildAutoSelectedStemByPlan = (stemPlanConfigs = []) => {
-  const selectedStem = {}
-  for (const plan of stemPlanConfigs || []) {
-    if (!plan?.planKey) continue
-    selectedStem[plan.planKey] = {}
-    for (const shipment of plan.shipments || []) {
-      if (!shipment?.key || !Array.isArray(shipment.options) || shipment.options.length === 0) continue
-      selectedStem[plan.planKey][shipment.key] = shipment.options[0]
-    }
-  }
-  return selectedStem
-}
-
 
 const S = {
   input: { width: '100%', padding: '10px 12px', borderRadius: 9, border: '2px solid #f0e8ff', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' },
@@ -464,8 +426,6 @@ export default function SchoolForm({ token }) {
   const [loading, setLoading] = useState(true)
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [approving, setApproving] = useState(false)
-  const [showApprovalConfirm, setShowApprovalConfirm] = useState(false)
 
   // Okul bilgileri
   const [schoolName, setSchoolName] = useState('')
@@ -589,19 +549,6 @@ export default function SchoolForm({ token }) {
       if (classRowsFromForecast.length > 0) {
         setClassItems(classRowsFromForecast)
         setIsAutoFilledMode(true)
-        const autoLevels = [...new Set(classRowsFromForecast.filter(row => (parseInt(row.qty, 10) || 0) > 0).map(row => row.grade))]
-        const orderItemsFromPreOrder = po.pre_order_items || []
-        const packageConfigs = getPackageSelectionConfigs(orderItemsFromPreOrder, productMap)
-        const selectablePackageCounts = packageConfigs.filter(config => [4, 8, 12].includes(config.count)).map(config => config.count)
-        if (selectablePackageCounts.length > 0) {
-          const dominantPackageCount = getDominantPackageCount(orderItemsFromPreOrder, productMap, selectablePackageCounts)
-          const defaultPackageCount = dominantPackageCount || selectablePackageCounts[0]
-          const autoSelectedPackageByLevel = Object.fromEntries(autoLevels.map(level => [level, defaultPackageCount]))
-          setSelectedPackageByLevel(autoSelectedPackageByLevel)
-          setSelectedActivitiesByLevel(buildAutoSelectedActivitiesByLevel(autoLevels, defaultPackageCount))
-        }
-        const stemConfigs = getStemPlanConfigs(orderItemsFromPreOrder, productMap)
-        if (stemConfigs.length > 0) setSelectedStemByPlan(buildAutoSelectedStemByPlan(stemConfigs))
       }
     }
 
@@ -619,7 +566,7 @@ export default function SchoolForm({ token }) {
   const selectablePackageConfigs = packageSelectionConfigs.filter(config => [4, 8, 12].includes(config.count))
   const selectablePackageCounts = selectablePackageConfigs.map(config => config.count)
   const stemPlanConfigs = getStemPlanConfigs(orderItems, productsById)
-  const shouldShowPackageSelection = selectablePackageCounts.length > 0
+  const shouldShowPackageSelection = selectablePackageCounts.length > 0 && !packageCounts.includes(16)
   const hasMultiplePackageOptions = selectablePackageCounts.length > 1
   const shouldShowReadOnlyProductList = packageCounts.includes(16)
   const shouldShowStemSelection = stemPlanConfigs.length > 0
@@ -687,6 +634,7 @@ export default function SchoolForm({ token }) {
   const selectedActivitySummary = [
     ...activeLevels.map(level => ({
       level,
+      packageCount: shouldShowReadOnlyProductList ? 16 : getLevelPackageCount(level),
       activities: shouldShowReadOnlyProductList
         ? getActivityOptionsForLevel(level)
         : formatActivityListWithCounts(getValidSelectedActivities(level))
@@ -694,7 +642,6 @@ export default function SchoolForm({ token }) {
     ...stemSelectionSummary,
   ]
   const classRowsForExport = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
-  const orderTotalAmount = orderItems.reduce((sum, item) => sum + ((parseInt(item.qty, 10) || 0) * (parseFloat(item.unit_price) || 0)), 0)
   const activitiesByLevelForExport = Object.fromEntries(
     selectedActivitySummary
       .map(item => [item.level, item.activities])
@@ -740,9 +687,6 @@ export default function SchoolForm({ token }) {
     }
     return ''
   }
-  const approvalDisabledReason = isApproved
-    ? ''
-    : (!['form_kaydedildi', 'kesinlesti'].includes(form?.status) ? 'Onay için önce formu kaydedin.' : getFormValidationError())
 
   const addClassItem = () => {
     setClassItems(prev => [...prev, { grade: '1. Sınıf', branch: '', teacher: '', teacher_email: '', teacher_phone: '', qty: '' }])
@@ -876,26 +820,6 @@ export default function SchoolForm({ token }) {
     setSubmitted(true)
     setSaving(false)
   }
-  const openApprovalConfirm = () => {
-    if (isApproved) return
-    if (approvalDisabledReason) {
-      alert(approvalDisabledReason)
-      return
-    }
-    setShowApprovalConfirm(true)
-  }
-  const confirmApproval = async () => {
-    if (!form || !preOrder || isApproved || approvalDisabledReason) return
-    setApproving(true)
-    const approvedAt = new Date().toISOString()
-    await supabase.from('school_forms').update({ status: 'onaylandi' }).eq('id', form.id)
-    await supabase.from('pre_orders').update({ status: 'onaylandi', onaylanma_tarihi: approvedAt }).eq('id', form.pre_order_id)
-    setForm(prev => prev ? ({ ...prev, status: 'onaylandi' }) : prev)
-    setPreOrder(prev => prev ? ({ ...prev, status: 'onaylandi', onaylanma_tarihi: approvedAt }) : prev)
-    setApproving(false)
-    setShowApprovalConfirm(false)
-    setSubmitted(true)
-  }
 
   if (loading) return (
     <div style={{ minHeight: '100vh', background: COLORS.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -923,19 +847,6 @@ export default function SchoolForm({ token }) {
             ? 'Formunuz bayi tarafından onaylandı. Aşağıdan formunuzu indirebilirsiniz.'
             : 'Bilgileriniz ilgili bayi tarafından onaylandıktan sonra siparişiniz kesinleşecektir.'}
         </div>
-        <div style={{ marginTop: 14, textAlign: 'left', padding: 14, background: '#fff', borderRadius: 12, boxShadow: '0 2px 12px rgba(0,0,0,0.08)' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>Onay Özeti</div>
-          <div style={{ fontSize: 12, color: '#444', marginBottom: 4 }}><strong>Okul:</strong> {schoolName || '-'}</div>
-          <div style={{ fontSize: 12, color: '#444', marginBottom: 4 }}><strong>Ürünler:</strong></div>
-          <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>
-            {orderItems.map((item, idx) => (
-              <div key={`approval-item-${idx}`}>• {productsById[item.product_id] || `Ürün #${item.product_id}`} — {item.qty} adet</div>
-            ))}
-          </div>
-          <div style={{ fontSize: 12, color: '#444', marginBottom: 4 }}><strong>Toplam Adet:</strong> {orderQtyTotal}</div>
-          <div style={{ fontSize: 12, color: '#444' }}><strong>Ara Toplam:</strong> {new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(orderTotalAmount || 0)}</div>
-          <div style={{ marginTop: 8, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>Onayladıktan sonra değişiklik yapılamaz.</div>
-        </div>
         <div style={{ marginTop: 24, padding: 16, background: '#fff', borderRadius: 12, boxShadow: '0 2px 12px rgba(0,0,0,0.08)' }}>
           <div style={{ fontSize: 13, color: '#888' }}>Toplam Sınıf Adedi</div>
           <div style={{ fontSize: 28, fontWeight: 800, color: COLORS.primary }}>{classItems.reduce((s, i) => s + (parseInt(i.qty) || 0), 0)}</div>
@@ -955,6 +866,9 @@ export default function SchoolForm({ token }) {
                   <div style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, fontWeight: 800, color: COLORS.primary, background: '#f3edff', borderRadius: 999, padding: '4px 8px', marginBottom: 8 }}>
                     {item.level}
                   </div>
+                  {item.packageCount ? (
+                    <div style={{ marginBottom: 8, fontSize: 11, color: '#6b6282', fontWeight: 700 }}>{item.packageCount}'li set</div>
+                  ) : null}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {item.activities.length > 0 ? item.activities.map((activity, idx) => (
                       <span key={`${item.level}-${activity}-${idx}`} style={{ fontSize: 11, fontWeight: 700, color: '#4a4660', background: '#f8f6ff', border: '1px solid #e8e0ff', borderRadius: 999, padding: '4px 8px' }}>
@@ -971,20 +885,8 @@ export default function SchoolForm({ token }) {
         )}
         <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
           <button style={S.btn(COLORS.teal)} onClick={handleDownloadReport}>Formu İndir</button>
-          {!isApproved && (
-            <button
-              style={{ ...S.btn(COLORS.green), opacity: approvalDisabledReason ? 0.6 : 1, cursor: approvalDisabledReason ? 'not-allowed' : 'pointer' }}
-              onClick={openApprovalConfirm}
-              disabled={Boolean(approvalDisabledReason)}
-            >
-              Siparişi Onaylıyorum
-            </button>
-          )}
           {!isApproved && <button style={S.btn(COLORS.primary)} onClick={() => setSubmitted(false)}>Formu Güncelle</button>}
         </div>
-        {!isApproved && approvalDisabledReason && (
-          <div style={{ marginTop: 10, fontSize: 12, color: COLORS.orange, fontWeight: 700 }}>{approvalDisabledReason}</div>
-        )}
         {isApproved && (
           <div style={{ marginTop: 12, fontSize: 13, fontWeight: 700, color: COLORS.green }}>
             Onaylandı ✓ {approvalDateText ? `(${approvalDateText})` : ''}
@@ -1305,27 +1207,6 @@ export default function SchoolForm({ token }) {
           </button>
         </div>
       </div>
-      {showApprovalConfirm && !isApproved && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ background: '#fff', borderRadius: 14, width: isMobile ? '92vw' : 560, maxWidth: '95vw', padding: 20 }}>
-            <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.primary, marginBottom: 10 }}>Sipariş Onayı</div>
-            <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}><strong>Okul:</strong> {schoolName || '-'}</div>
-            <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}><strong>Ürünler:</strong></div>
-            <div style={{ marginBottom: 10 }}>
-              {orderItems.map((item, idx) => (
-                <div key={`confirm-item-${idx}`} style={{ fontSize: 12, color: '#555' }}>• {productsById[item.product_id] || `Ürün #${item.product_id}`} — {item.qty} adet</div>
-              ))}
-            </div>
-            <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><strong>Toplam Adet:</strong> {orderQtyTotal}</div>
-            <div style={{ fontSize: 13, color: '#444', marginBottom: 10 }}><strong>Ara Toplam:</strong> {new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(orderTotalAmount || 0)}</div>
-            <div style={{ fontSize: 12, color: COLORS.orange, fontWeight: 700, marginBottom: 14 }}>Onayladıktan sonra değişiklik yapılamaz.</div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button style={S.btn('#9ca3af')} onClick={() => setShowApprovalConfirm(false)} disabled={approving}>Vazgeç</button>
-              <button style={S.btn(COLORS.green)} onClick={confirmApproval} disabled={approving}>{approving ? 'Onaylanıyor...' : 'Siparişi Onaylıyorum'}</button>
-            </div>
-          </div>
-        </div>
-      )}
       </div>
     </div>
   )

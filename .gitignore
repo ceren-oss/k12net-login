@@ -24,3 +24,5 @@ yarn-error.log*
 .vercel
 cek-aktarma-sablonu.xlsx
 kesif-kutusu-bayi-final.zip
+.npm-cache/
+.npm-cache/

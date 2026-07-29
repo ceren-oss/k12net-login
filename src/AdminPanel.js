@@ -42,7 +42,8 @@ const splitPreOrderNote = (rawNote) => {
   }
 }
 const getOrderCargoFee = (order) => parseMoney(order?.cargo_fee)
-const getOrderTotalWithCargo = (order) => parseMoney(order?.total) + getOrderCargoFee(order)
+const getOrderBoxFee = (order) => parseMoney(order?.kutu_bedeli)
+const getOrderTotalWithCargo = (order) => parseMoney(order?.total) + getOrderCargoFee(order) + getOrderBoxFee(order)
 const escapeCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
 const downloadCsvReport = (filename, headers, rows) => {
   const csvText = [headers, ...rows]
@@ -801,13 +802,28 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
   const detailSubtotal = (detail?.pre_order_items || []).reduce((sum, item) => sum + ((item.qty || 0) * (item.unit_price || 0)), 0)
   const detailCargoFee = getPreOrderAutoCargoFee(detail)
   const detailTotalWithCargo = detailSubtotal + detailCargoFee
+  const approvePreOrder = async (po) => {
+    if (!window.confirm('Bu ön siparişi onaylamak istiyor musunuz?')) return
+    const approvedAt = new Date().toISOString()
+    await supabase.from('pre_orders').update({ status: 'onaylandi', onaylanma_tarihi: approvedAt }).eq('id', po.id)
+    await logAdminAction('preorder_approved', `preorder:${po.id}`, {
+      dealer_id: po.dealer_id,
+      school_name: po.school_name,
+      approved_at: approvedAt,
+    })
+    if (detail?.id === po.id) {
+      setDetail(prev => prev ? ({ ...prev, status: 'onaylandi', onaylanma_tarihi: approvedAt }) : prev)
+    }
+    loadAll()
+    alert('Ön sipariş onaylandı.')
+  }
 
   const convertToOrder = async (po) => {
     const items = po.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
     const cargoFee = getPreOrderAutoCargoFee(po)
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', onaylanan_siparis: true, note: po.note, status: 'beklemede' }])
+    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, kutu_bedeli: 0, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', onaylanan_siparis: true, note: po.note, status: 'beklemede' }])
     for (const item of items) {
       await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
     }
@@ -852,7 +868,7 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
               <tr key={po.id}>
                 <td style={S.td}><strong style={{ color: COLORS.primary }}>{po.id}</strong></td>
                 <td style={S.td}>{getDealerName(po.dealer_id)}</td>
-                <td style={S.td}>{po.school_name}</td>
+                <td style={S.td}>{po.school_name}<div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Cari: {po.cari_adi || '-'}</div></td>
                 <td style={S.td}>{po.season}</td>
                 <td style={S.td}>
                   <strong>{fmt(totalWithCargo)}</strong>
@@ -863,6 +879,7 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
                 <td style={S.td}>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => setDetail(po)}>Detay</button>
+                    {(po.status === 'form_kaydedildi' || po.status === 'kesinlesti') && <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => approvePreOrder(po)}>Siparişi Onaylıyorum</button>}
                     {po.status === 'onaylandi' && <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => convertToOrder(po)}>Siparişe Dönüştür</button>}
                   </div>
                 </td>
@@ -881,8 +898,10 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 14 }}>
               <div><span style={{ fontSize: 11, color: '#888' }}>BAYİ</span><div style={{ fontWeight: 700 }}>{getDealerName(detail.dealer_id)}</div></div>
               <div><span style={{ fontSize: 11, color: '#888' }}>OKUL</span><div style={{ fontWeight: 700 }}>{detail.school_name}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>CARİ ADI</span><div style={{ fontWeight: 700 }}>{detail.cari_adi || '-'}</div></div>
               <div><span style={{ fontSize: 11, color: '#888' }}>SEZON</span><div style={{ fontWeight: 700 }}>{detail.season}</div></div>
               <div><span style={{ fontSize: 11, color: '#888' }}>ADRES</span><div style={{ fontWeight: 700 }}>{detail.address || '-'}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>ONAY TARİHİ</span><div style={{ fontWeight: 700 }}>{detail.onaylanma_tarihi ? fmtDateTime(detail.onaylanma_tarihi) : '-'}</div></div>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
               <thead><tr><th style={S.th}>Ürün</th><th style={S.th}>Adet</th><th style={S.th}>Birim Fiyat</th><th style={S.th}>Toplam</th></tr></thead>
@@ -945,6 +964,11 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
                 <button style={S.btn(COLORS.green)} onClick={() => convertToOrder(detail)}>Siparişe Dönüştür</button>
               </div>
             )}
+            {(detail.status === 'form_kaydedildi' || detail.status === 'kesinlesti') && (
+              <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end', marginTop: 16 }}>
+                <button style={S.btn(COLORS.green)} onClick={() => approvePreOrder(detail)}>Siparişi Onaylıyorum</button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -958,8 +982,8 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
   const [processSaving, setProcessSaving] = useState(false)
   const [selectedOrder, setSelectedOrder] = useState(null)
   const [classItems, setClassItems] = useState([{ grade: '1. Sınıf', branch: '', teacher: '', qty: '' }])
-  const [processForm, setProcessForm] = useState({ cargo_date: '', cargo_fee: '', free_qty: 0, dia_cari_kodu: '', dia_fatura_no: '', dia_status: false, invoice_status: 'kesilmedi', cargo_status: 'faturalanmadi' })
-  const [form, setForm] = useState({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
+  const [processForm, setProcessForm] = useState({ cargo_date: '', cargo_fee: '', kutu_bedeli: '', free_qty: 0, dia_cari_kodu: '', dia_fatura_no: '', dia_status: false, invoice_status: 'kesilmedi', cargo_status: 'faturalanmadi' })
+  const [form, setForm] = useState({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
 
   const total = (parseInt(form.qty) || 0) * (parseFloat(form.unit_price) || 0)
 
@@ -968,6 +992,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
     setProcessForm({
       cargo_date: order.cargo_date || '',
       cargo_fee: order.cargo_fee || '',
+      kutu_bedeli: order.kutu_bedeli || '',
       free_qty: order.free_qty || 0,
       dia_cari_kodu: order.dia_cari_kodu || '',
       dia_fatura_no: order.dia_fatura_no || '',
@@ -999,6 +1024,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
     await supabase.from('orders').update({
       cargo_date: processForm.cargo_date || null,
       cargo_fee: parseFloat(processForm.cargo_fee) || 0,
+      kutu_bedeli: parseFloat(processForm.kutu_bedeli) || 0,
       free_qty: parseInt(processForm.free_qty) || 0,
       dia_cari_kodu: processForm.dia_cari_kodu,
       dia_fatura_no: processForm.dia_fatura_no,
@@ -1032,7 +1058,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
   const save = async () => {
     if (!form.dealer_id || !form.product_id || !form.qty) return
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: form.dealer_id, school_name: form.school_name, season: form.season, total, cargo_fee: parseFloat(form.cargo_fee) || 0, cargo_date: form.cargo_date || null, cargo_status: 'faturalanmadi', invoice_status: form.invoice_status, dia_status: form.dia_status, note: form.note, status: 'beklemede' }])
+    await supabase.from('orders').insert([{ id: orderId, dealer_id: form.dealer_id, school_name: form.school_name, season: form.season, total, cargo_fee: parseFloat(form.cargo_fee) || 0, kutu_bedeli: parseFloat(form.kutu_bedeli) || 0, cargo_date: form.cargo_date || null, cargo_status: 'faturalanmadi', invoice_status: form.invoice_status, dia_status: form.dia_status, note: form.note, status: 'beklemede' }])
     await supabase.from('order_items').insert([{ order_id: orderId, product_id: parseInt(form.product_id), qty: parseInt(form.qty), unit_price: parseFloat(form.unit_price), free_qty: parseInt(form.free_qty) || 0 }])
     const dealer = dealers.find(d => d.id === form.dealer_id)
     await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', form.dealer_id)
@@ -1043,7 +1069,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       total,
     })
     setModal(false)
-    setForm({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
+    setForm({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
     loadAll()
   }
 
@@ -1074,6 +1100,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                 <strong>{fmt(getOrderTotalWithCargo(o))}</strong>
                 <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam: {fmt(o.total)}</div>
                 <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(getOrderCargoFee(o))}</div>
+                <div style={{ fontSize: 11, color: '#666' }}>Kutu Bedeli: {fmt(getOrderBoxFee(o))}</div>
               </td>
               <td style={S.td}>
                 <select value={o.status || 'beklemede'} onChange={e => updateField(o.id, 'status', e.target.value)} style={{ ...S.select, width: 130, fontSize: 11, padding: '4px 8px' }}>
@@ -1113,6 +1140,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                 <div><label style={S.label}>Sevk Tarihi</label><input type="date" style={S.input} value={processForm.cargo_date} onChange={e => setProcessForm(p => ({ ...p, cargo_date: e.target.value }))} /></div>
                 <div><label style={S.label}>Kargo Tutarı</label><input type="number" style={S.input} value={processForm.cargo_fee} onChange={e => setProcessForm(p => ({ ...p, cargo_fee: e.target.value }))} /></div>
                 <div><label style={S.label}>Ücretsiz Set Adedi</label><input type="number" style={S.input} value={processForm.free_qty} onChange={e => setProcessForm(p => ({ ...p, free_qty: e.target.value }))} /></div>
+                <div><label style={S.label}>Kutu Bedeli</label><input type="number" style={S.input} value={processForm.kutu_bedeli} onChange={e => setProcessForm(p => ({ ...p, kutu_bedeli: e.target.value }))} /></div>
                 <div><label style={S.label}>Kargo Durumu</label>
                   <select style={S.select} value={processForm.cargo_status} onChange={e => setProcessForm(p => ({ ...p, cargo_status: e.target.value }))}>
                     <option value="faturalanmadi">Faturalanmadı</option>
@@ -1207,6 +1235,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
               <div><label style={S.label}>Birim Fiyat</label><input type="number" style={S.input} value={form.unit_price} onChange={e => setForm(p => ({ ...p, unit_price: e.target.value }))} /></div>
               <div><label style={S.label}>Ücretsiz Adet</label><input type="number" style={S.input} value={form.free_qty} onChange={e => setForm(p => ({ ...p, free_qty: e.target.value }))} /></div>
               <div><label style={S.label}>Kargo Tutarı</label><input type="number" style={S.input} value={form.cargo_fee} onChange={e => setForm(p => ({ ...p, cargo_fee: e.target.value }))} /></div>
+              <div><label style={S.label}>Kutu Bedeli</label><input type="number" style={S.input} value={form.kutu_bedeli} onChange={e => setForm(p => ({ ...p, kutu_bedeli: e.target.value }))} /></div>
               <div><label style={S.label}>Sevk Tarihi</label><input type="date" style={S.input} value={form.cargo_date} onChange={e => setForm(p => ({ ...p, cargo_date: e.target.value }))} /></div>
               <div><label style={S.label}>Fatura</label><select style={S.select} value={form.invoice_status} onChange={e => setForm(p => ({ ...p, invoice_status: e.target.value }))}><option value="kesilmedi">Kesilmedi</option><option value="kesildi">Kesildi</option></select></div>
             </div>

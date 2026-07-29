@@ -96,8 +96,9 @@ const buildPreOrderNote = (rawNote, forecastRows = []) => {
 const getPreOrderCargoFee = () => 0
 const generatePreOrderId = (seed = 0) => `ON-${(Date.now() + seed).toString().slice(-8)}${Math.random().toString(36).slice(2, 5).toUpperCase()}`
 const getOrderCargoFee = (order) => parseAmount(order?.cargo_fee)
+const getOrderBoxFee = (order) => parseAmount(order?.kutu_bedeli)
 const getOrderTeacherSetCount = () => 0
-const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order)
+const getOrderTotalWithCargo = (order) => parseAmount(order?.total) + getOrderCargoFee(order) + getOrderBoxFee(order)
 const isApprovedOrder = (order) => Boolean(order?.onaylanan_siparis)
 const normalizeImportText = (value) => String(value || '')
   .toLocaleLowerCase('tr-TR')
@@ -491,57 +492,16 @@ export default function DealerPortal({ dealer, onLogout }) {
     return true
   }
 
-  const approveForm = async (sf, po) => {
-    if (!window.confirm('Bu formu onaylayıp siparişi kesinleştirmek istiyor musunuz?')) return
-    const items = po?.pre_order_items || []
-    const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
-    const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    const schoolFormItems = sf?.school_form_items || []
-    const classRows = schoolFormItems
-      .filter(item => item.grade && item.grade !== ACTIVITY_MARKER_GRADE && item.grade !== PRODUCT_MARKER_GRADE && parseInt(item.qty) > 0)
-      .map(item => ({
-        order_id: orderId,
-        grade: item.grade,
-        branch: item.branch || '',
-        teacher: item.teacher || '',
-        qty: parseInt(item.qty) || 0,
-      }))
-
-    await supabase.from('orders').insert([{
-      id: orderId, dealer_id: dealer.id, school_name: sf.school_name,
-      season: po?.season, total, invoice_status: 'kesilmedi',
-      dia_status: false, cargo_status: 'faturalanmadi', status: 'beklemede',
-      onaylanan_siparis: true,
-      cargo_fee: 0, free_qty: 0,
-      note: 'Okul formu ile oluşturuldu'
-    }])
-    for (const item of items) {
-      await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
+  const approveForm = async (po) => {
+    if (!window.confirm('Bu ön siparişi onaylamak istiyor musunuz?')) return
+    const approvedAt = new Date().toISOString()
+    await supabase.from('pre_orders').update({ status: 'onaylandi', onaylanma_tarihi: approvedAt }).eq('id', po.id)
+    const linkedForm = schoolForms.find(sf => sf.pre_order_id === po.id)
+    if (linkedForm) {
+      await supabase.from('school_forms').update({ status: 'onaylandi' }).eq('id', linkedForm.id)
     }
-    const activityRows = [...new Set(
-      schoolFormItems
-        .filter(item => item.grade === ACTIVITY_MARKER_GRADE && item.branch && String(item.teacher || '').trim())
-        .map(item => `${item.branch}:::${String(item.teacher || '').trim()}`)
-    )].map(key => {
-      const [level, activityName] = key.split(':::')
-      return {
-        order_id: orderId,
-        grade: ACTIVITY_MARKER_GRADE,
-        branch: level,
-        teacher: activityName,
-        qty: 0,
-      }
-    })
-    const orderClassRows = [...classRows, ...activityRows]
-    if (orderClassRows.length > 0) {
-      await supabase.from('order_class_items').insert(orderClassRows)
-    }
-    const { data: freshDealer } = await supabase.from('dealers').select('balance').eq('id', dealer.id).single()
-    await supabase.from('dealers').update({ balance: (freshDealer?.balance || 0) - total }).eq('id', dealer.id)
-    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: 0 }).eq('id', po.id)
-    await supabase.from('school_forms').update({ status: 'onaylandi' }).eq('id', sf.id)
     loadAll()
-    alert('Sipariş oluşturuldu: ' + orderId)
+    alert('Ön sipariş onaylandı.')
   }
 
   const NAV = [
@@ -655,6 +615,7 @@ function Dashboard({ dealer, orders, payments, checks, preOrders, schoolForms, i
 
 function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, isMobile }) {
   const [schoolName, setSchoolName] = useState('')
+  const [cariName, setCariName] = useState('')
   const [address, setAddress] = useState('')
   const [season, setSeason] = useState('2026-2027')
   const [note, setNote] = useState('')
@@ -669,6 +630,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   const [excelBatchLoading, setExcelBatchLoading] = useState(false)
   const [excelBatchError, setExcelBatchError] = useState('')
   const [excelBatchSummary, setExcelBatchSummary] = useState(null)
+  const [submitFeedback, setSubmitFeedback] = useState(null)
 
   const updateItem = (idx, field, value) => {
     setItems(prev => {
@@ -835,6 +797,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         id: generatePreOrderId(idx),
         dealer_id: dealer.id,
         school_name: row.schoolName,
+        cari_adi: row.schoolName,
         address: row.address,
         season,
         note: buildPreOrderNote(`Toplu Excel: ${row.fileName}`, row.classForecastRows),
@@ -862,6 +825,10 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
       }
 
       setSubmitted(true)
+      setSubmitFeedback({
+        title: 'Toplu Ön Siparişler Oluşturuldu',
+        message: `${preOrdersPayload.length} ön sipariş başarıyla oluşturuldu.`,
+      })
       setExcelBatchSummary({
         createdCount: preOrdersPayload.length,
         totalQty: parsedRowsByFile.reduce((sum, row) => sum + (row.orderQtyTotal || 0), 0),
@@ -880,7 +847,10 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   }
 
   const save = async () => {
-    if (!schoolName || filledItems.length === 0) return
+    if (!schoolName || !cariName || filledItems.length === 0) {
+      alert('Kurum adı, cari adı ve en az bir ürün satırı zorunludur.')
+      return
+    }
     if (validForecastRows.length === 0) {
       alert('Ön görülen sınıf dağılımı zorunludur.')
       return
@@ -896,15 +866,20 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
     setLoading(true)
     const preOrderId = generatePreOrderId()
     const noteWithForecast = buildPreOrderNote(note, validForecastRows)
-    await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, address, season, note: noteWithForecast, status: 'on_siparis' }])
+    await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, cari_adi: cariName, address, season, note: noteWithForecast, status: 'on_siparis' }])
     await supabase.from('pre_order_items').insert(filledItems.map(item => ({
       pre_order_id: preOrderId, grade: '-', branch: '-', teacher: '-',
       product_id: parseInt(item.product_id, 10), qty: parseInt(item.qty, 10), unit_price: parseAmount(item.unit_price),
     })))
     setSubmitted(true)
+    setSubmitFeedback({
+      title: 'Ön Sipariş Alındı',
+      message: 'Ön sipariş başarıyla kaydedildi. Ön Siparişlerim ekranından takip edebilirsiniz.',
+    })
     setExcelBatchSummary(null)
     setLoading(false)
     setSchoolName('')
+    setCariName('')
     setAddress('')
     setNote('')
     setItems([{ product_id: '', qty: '', unit_price: 0 }])
@@ -1002,7 +977,8 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Kurum Bilgileri</div>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 14, marginBottom: 14 }}>
           <div><label style={S.label}>Kurum Adı *</label><input style={S.input} value={schoolName} onChange={e => setSchoolName(e.target.value)} placeholder="Okul / Kurum adı" /></div>
-          <div><label style={S.label}>Sezon</label><select style={S.select} value={season} onChange={e => setSeason(e.target.value)}><option>2025-2026</option><option>2026-2027</option></select></div>
+          <div><label style={S.label}>Cari Adı *</label><input style={S.input} value={cariName} onChange={e => setCariName(e.target.value)} placeholder="Muhasebe cari adı" /></div>
+          <div><label style={S.label}>Sezon *</label><select style={S.select} value={season} onChange={e => setSeason(e.target.value)}><option>2025-2026</option><option>2026-2027</option></select></div>
         </div>
         <div><label style={S.label}>Adres</label><input style={S.input} value={address} onChange={e => setAddress(e.target.value)} placeholder="Kurum adresi" /></div>
       </div>
@@ -1094,10 +1070,22 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         <input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Not..." />
       </div>
       <div style={{ display: 'flex', justifyContent: isMobile ? 'stretch' : 'flex-end' }}>
-        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || filledItems.length === 0 || validForecastRows.length === 0 || hasDuplicateProductSelection || isForecastQtyMismatch}>
+        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || !cariName || filledItems.length === 0 || validForecastRows.length === 0 || hasDuplicateProductSelection || isForecastQtyMismatch}>
           {loading ? 'Gönderiliyor...' : 'Ön Sipariş Gönder'}
         </button>
       </div>
+      {submitFeedback && (
+        <div style={S.modal} onClick={() => setSubmitFeedback(null)}>
+          <div style={{ ...S.modalBox, width: isMobile ? '92vw' : 460 }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 20, marginBottom: 8 }}>✅</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: COLORS.primary, marginBottom: 8 }}>{submitFeedback.title}</div>
+            <div style={{ fontSize: 13, color: '#555', marginBottom: 16 }}>{submitFeedback.message}</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button style={S.btn(COLORS.primary)} onClick={() => setSubmitFeedback(null)}>Tamam</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1109,11 +1097,20 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const [editModal, setEditModal] = useState(false)
   const [editSaving, setEditSaving] = useState(false)
   const [editingPreOrder, setEditingPreOrder] = useState(null)
-  const [editForm, setEditForm] = useState({ school_name: '', address: '', season: '2026-2027', note: '' })
+  const [editForm, setEditForm] = useState({ school_name: '', cari_adi: '', address: '', season: '2026-2027', note: '' })
   const [editItems, setEditItems] = useState([{ ...emptyItem }])
   const [editClassForecast, setEditClassForecast] = useState([{ grade: FORECAST_GRADES[0], qty: '' }])
   const [filters, setFilters] = useState({ id: '', school: '', season: '', total: '', formStatus: '', status: '' })
   const getFormClassRows = (schoolForm) => (schoolForm?.school_form_items || []).filter(item => item.grade !== '__URUN__' && item.grade !== '__ETKINLIK__')
+  const getFormPackageByLevel = (schoolForm) => (schoolForm?.school_form_items || [])
+    .filter(item => item.grade === '__URUN__' && item.branch)
+    .reduce((acc, item) => {
+      const level = String(item.branch || '').trim()
+      const packageCount = parseInt(item.qty, 10) || 0
+      if (!level || !packageCount) return acc
+      acc[level] = packageCount
+      return acc
+    }, {})
   const getFormActivitiesByLevel = (schoolForm) => (schoolForm?.school_form_items || [])
     .filter(item => item.grade === '__ETKINLIK__')
     .reduce((acc, item) => {
@@ -1135,8 +1132,10 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
   const detailLinkedForm = detail ? schoolForms.find(sf => sf.pre_order_id === detail.id) : null
   const formClassRows = getFormClassRows(formDetail)
   const formActivitiesByLevel = toActivityDisplay(getFormActivitiesByLevel(formDetail))
+  const formPackagesByLevel = getFormPackageByLevel(formDetail)
   const detailFormClassRows = getFormClassRows(detailLinkedForm)
   const detailFormActivitiesByLevel = toActivityDisplay(getFormActivitiesByLevel(detailLinkedForm))
+  const detailFormPackagesByLevel = getFormPackageByLevel(detailLinkedForm)
   const detailNoteData = splitPreOrderNote(detail?.note || '')
   const detailForecastRows = detailNoteData.forecastRows
   const detailTeacherSetQty = 0
@@ -1156,6 +1155,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     on_siparis: { label: 'Bekliyor', color: COLORS.orange },
     form_kaydedildi: { label: 'Form Kaydedildi', color: COLORS.primary },
     kesinlesti: { label: 'Kesinleşti (Bayi)', color: COLORS.primary },
+    onaylandi: { label: 'Onaylandı', color: COLORS.green },
     siparise_donustu: { label: 'Kesinleşti', color: COLORS.green },
     iptal: { label: 'İptal', color: '#aaa' }
   }
@@ -1203,6 +1203,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     setEditingPreOrder(po)
     setEditForm({
       school_name: po.school_name || '',
+      cari_adi: po.cari_adi || '',
       address: po.address || '',
       season: po.season || '2026-2027',
       note: userNote,
@@ -1277,6 +1278,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     try {
       const updated = await updatePreOrder(editingPreOrder.id, {
         school_name: editForm.school_name,
+        cari_adi: editForm.cari_adi,
         address: editForm.address,
         season: editForm.season,
         note: buildPreOrderNote(editForm.note, validEditClassForecast),
@@ -1365,6 +1367,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             const totalWithVat = getAmountWithVat(total)
             const sf = schoolForms.find(form => form.pre_order_id === po.id)
             const isEditable = po.status === 'on_siparis'
+            const canApprove = po.status === 'form_kaydedildi' || po.status === 'kesinlesti'
             const canManageForm = po.status === 'on_siparis' || po.status === 'kesinlesti'
             const cargoFee = getPreOrderCargoFee(po)
             const teacherSetQty = getPreOrderTeacherSetQty(po)
@@ -1372,7 +1375,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             return (
               <tr key={po.id}>
                 <td style={S.td}><strong style={{ color: COLORS.primary }}>{po.id}</strong></td>
-                <td style={S.td}><strong>{po.school_name}</strong></td>
+                <td style={S.td}><strong>{po.school_name}</strong><div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Cari: {po.cari_adi || '-'}</div></td>
                 <td style={S.td}>{po.season}</td>
                 <td style={S.td}>
                   <strong>{fmt(totalWithCargo)}</strong>
@@ -1405,6 +1408,11 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                     )}
                     {!isEditable && po.status === 'kesinlesti' && (
                       <span style={{ ...S.badge('#6b7280'), alignSelf: 'center' }}>Düzenleme Kilitli</span>
+                    )}
+                    {canApprove && (
+                      <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => approveForm(po)}>
+                        Siparişi Onaylıyorum
+                      </button>
                     )}
                     {sf && (sf.status === 'kesinlesti' || sf.status === 'tamamlandi' || sf.status === 'okul_formu_guncelledi') && (
                       <button style={{ ...S.btn(COLORS.yellow), fontSize: 11, padding: '5px 10px' }} onClick={() => setFormDetail(sf)}>Formu Göster</button>
@@ -1491,7 +1499,11 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 <input style={S.input} value={editForm.school_name} onChange={e => setEditForm(prev => ({ ...prev, school_name: e.target.value }))} />
               </div>
               <div>
-                <label style={S.label}>Sezon</label>
+                <label style={S.label}>Cari Adı</label>
+                <input style={S.input} value={editForm.cari_adi} onChange={e => setEditForm(prev => ({ ...prev, cari_adi: e.target.value }))} />
+              </div>
+              <div>
+                <label style={S.label}>Sezon *</label>
                 <select style={S.select} value={editForm.season} onChange={e => setEditForm(prev => ({ ...prev, season: e.target.value }))}>
                   <option>2025-2026</option>
                   <option>2026-2027</option>
@@ -1602,6 +1614,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 14 }}>
               <div><span style={{ fontSize: 11, color: '#888' }}>OKUL</span><div style={{ fontWeight: 700 }}>{detail.school_name}</div></div>
+              <div><span style={{ fontSize: 11, color: '#888' }}>CARİ ADI</span><div style={{ fontWeight: 700 }}>{detail.cari_adi || '-'}</div></div>
               <div><span style={{ fontSize: 11, color: '#888' }}>SEZON</span><div style={{ fontWeight: 700 }}>{detail.season}</div></div>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
@@ -1677,6 +1690,16 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                     <div><span style={{ fontSize: 11, color: '#888' }}>VERGİ DAİRESİ</span><div style={{ fontWeight: 700 }}>{detailLinkedForm.tax_office || '-'}</div></div>
                   </div>
                   <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>SEVİYE BAZLI PAKET TİPİ</div>
+                    {Object.keys(detailFormPackagesByLevel).length > 0 ? (
+                      Object.entries(detailFormPackagesByLevel).map(([level, packageCount]) => (
+                        <div key={`detail-package-${level}`} style={{ fontSize: 12, color: '#333', fontWeight: 700, marginBottom: 4 }}>
+                          {level}: {packageCount}'li set
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>-</div>
+                    )}
                     <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>SEVİYE BAZLI ÜRÜN LİSTESİ</div>
                     {Object.keys(detailFormActivitiesByLevel).length > 0 ? (
                       Object.entries(detailFormActivitiesByLevel).map(([level, activities]) => (
@@ -1732,6 +1755,16 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               <div style={{ gridColumn: isMobile ? 'auto' : '1/-1' }}><span style={{ fontSize: 11, color: '#888' }}>ADRES</span><div style={{ fontWeight: 700 }}>{formDetail.address || '-'}</div></div>
             </div>
             <div style={{ marginBottom: 16, background: '#f8f4ff', borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>SEVİYE BAZLI PAKET TİPİ</div>
+              {Object.keys(formPackagesByLevel).length > 0 ? (
+                Object.entries(formPackagesByLevel).map(([level, packageCount]) => (
+                  <div key={`form-package-${level}`} style={{ fontWeight: 700, fontSize: 13, color: '#333', marginBottom: 3 }}>
+                    {level}: {packageCount}'li set
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#333', marginBottom: 8 }}>-</div>
+              )}
               <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>SEVİYE BAZLI ÜRÜN LİSTESİ</div>
               {Object.keys(formActivitiesByLevel).length > 0 ? (
                 Object.entries(formActivitiesByLevel).map(([level, activities]) => (
@@ -1819,10 +1852,10 @@ function Orders({ orders, products, isMobile, title = 'Siparişlerim', emptyText
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
           <thead><tr>
-            <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Ara Toplam</th><th style={S.th}>Kargo</th><th style={S.th}>Ücretsiz Set</th><th style={S.th}>Kargo Dahil Toplam</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
+            <th style={S.th}>Sipariş No</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Ara Toplam</th><th style={S.th}>Kargo</th><th style={S.th}>Kutu Bedeli</th><th style={S.th}>Ücretsiz Set</th><th style={S.th}>Kargo Dahil Toplam</th><th style={S.th}>Durum</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
           </tr></thead>
           <tbody>{orders.length === 0 ? (
-            <tr><td colSpan={11} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>{emptyText}</td></tr>
+            <tr><td colSpan={12} style={{ ...S.td, textAlign: 'center', color: '#aaa', padding: 32 }}>{emptyText}</td></tr>
           ) : orders.map(o => (
             <tr key={o.id}>
               <td style={S.td}><strong style={{ color: COLORS.primary }}>{o.id}</strong></td>
@@ -1830,6 +1863,7 @@ function Orders({ orders, products, isMobile, title = 'Siparişlerim', emptyText
               <td style={S.td}>{o.season}</td>
               <td style={S.td}><strong>{fmt(o.total)}</strong></td>
               <td style={S.td}>{fmt(getOrderCargoFee(o))}</td>
+              <td style={S.td}>{fmt(getOrderBoxFee(o))}</td>
               <td style={S.td}>{getOrderTeacherSetCount(o)}</td>
               <td style={S.td}><strong>{fmt(getOrderTotalWithCargo(o))}</strong></td>
               <td style={S.td}><span style={S.badge(STATUS_META[o.status]?.color || '#aaa')}>{STATUS_META[o.status]?.label || (o.status || '-')}</span></td>
@@ -1882,6 +1916,10 @@ function Orders({ orders, products, isMobile, title = 'Siparişlerim', emptyText
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
                     <span>Kargo Bedeli</span>
                     <strong>{fmt(getOrderCargoFee(detail))}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                    <span>Kutu Bedeli</span>
+                    <strong>{fmt(getOrderBoxFee(detail))}</strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
                     <span>Ücretsiz Öğretmen Seti</span>
