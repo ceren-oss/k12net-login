@@ -44,6 +44,37 @@ const splitPreOrderNote = (rawNote) => {
 const getOrderCargoFee = (order) => parseMoney(order?.cargo_fee)
 const getOrderBoxFee = (order) => parseMoney(order?.kutu_bedeli)
 const getOrderTotalWithCargo = (order) => parseMoney(order?.total) + getOrderCargoFee(order) + getOrderBoxFee(order)
+
+// ---------------------- KDV ----------------------
+// KDV oranı sabit değildir, sipariş bazında elle girilebilir.
+const DEFAULT_KDV_RATE = 20
+const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100
+const getOrderKdvRate = (order) => {
+  const raw = order?.kdv_orani
+  if (raw === null || raw === undefined || raw === '') return DEFAULT_KDV_RATE
+  const parsed = parseFloat(raw)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_KDV_RATE
+}
+// kdv_dahil = true  → girilen tutarların İÇİNDE KDV var
+// kdv_dahil = false → girilen tutarlar KDV HARİÇ, üzerine eklenir
+const isOrderKdvIncluded = (order) => Boolean(order?.kdv_dahil)
+// Sipariş tutarlarının KDV kırılımı
+const getOrderAmountBreakdown = (order) => {
+  const gross = getOrderTotalWithCargo(order)
+  const rate = getOrderKdvRate(order)
+  const factor = 1 + (rate / 100)
+  if (isOrderKdvIncluded(order)) {
+    // Tutarlar KDV dahil girilmiş → net'i geri hesapla
+    const net = factor > 0 ? gross / factor : gross
+    return { net: round2(net), kdv: round2(gross - net), gross: round2(gross), rate, included: true }
+  }
+  // Tutarlar KDV hariç girilmiş → KDV'yi üzerine ekle
+  const kdv = gross * (rate / 100)
+  return { net: round2(gross), kdv: round2(kdv), gross: round2(gross + kdv), rate, included: false }
+}
+// Ekranlarda gösterilecek KDV'li toplam
+const getOrderTotalWithKdv = (order) => getOrderAmountBreakdown(order).gross
+const formatKdvRate = (rate) => `%${String(rate).replace('.', ',')}`
 const escapeCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
 const downloadCsvReport = (filename, headers, rows) => {
   const csvText = [headers, ...rows]
@@ -978,12 +1009,14 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
 
 function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAction, isMobile }) {
   const [modal, setModal] = useState(false)
+  // Liste görünümünde tutarlar KDV dahil mi hariç mi gösterilsin
+  const [kdvViewMode, setKdvViewMode] = useState('dahil') // 'dahil' | 'haric'
   const [processModal, setProcessModal] = useState(false)
   const [processSaving, setProcessSaving] = useState(false)
   const [selectedOrder, setSelectedOrder] = useState(null)
   const [classItems, setClassItems] = useState([{ grade: '1. Sınıf', branch: '', teacher: '', qty: '' }])
-  const [processForm, setProcessForm] = useState({ cargo_date: '', cargo_fee: '', kutu_bedeli: '', free_qty: 0, dia_cari_kodu: '', dia_fatura_no: '', dia_status: false, invoice_status: 'kesilmedi', cargo_status: 'faturalanmadi' })
-  const [form, setForm] = useState({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
+  const [processForm, setProcessForm] = useState({ cargo_date: '', cargo_fee: '', kutu_bedeli: '', free_qty: 0, kdv_orani: String(DEFAULT_KDV_RATE), kdv_dahil: false, dia_cari_kodu: '', dia_fatura_no: '', dia_status: false, invoice_status: 'kesilmedi', cargo_status: 'faturalanmadi' })
+  const [form, setForm] = useState({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', kdv_orani: String(DEFAULT_KDV_RATE), kdv_dahil: false, cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
 
   const total = (parseInt(form.qty) || 0) * (parseFloat(form.unit_price) || 0)
 
@@ -994,6 +1027,8 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       cargo_fee: order.cargo_fee || '',
       kutu_bedeli: order.kutu_bedeli || '',
       free_qty: order.free_qty || 0,
+      kdv_orani: String(getOrderKdvRate(order)),
+      kdv_dahil: isOrderKdvIncluded(order),
       dia_cari_kodu: order.dia_cari_kodu || '',
       dia_fatura_no: order.dia_fatura_no || '',
       dia_status: order.dia_status || false,
@@ -1026,6 +1061,8 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       cargo_fee: parseFloat(processForm.cargo_fee) || 0,
       kutu_bedeli: parseFloat(processForm.kutu_bedeli) || 0,
       free_qty: parseInt(processForm.free_qty) || 0,
+      kdv_orani: parseFloat(processForm.kdv_orani) >= 0 ? parseFloat(processForm.kdv_orani) : DEFAULT_KDV_RATE,
+      kdv_dahil: Boolean(processForm.kdv_dahil),
       dia_cari_kodu: processForm.dia_cari_kodu,
       dia_fatura_no: processForm.dia_fatura_no,
       dia_status: processForm.dia_status,
@@ -1058,7 +1095,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
   const save = async () => {
     if (!form.dealer_id || !form.product_id || !form.qty) return
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: form.dealer_id, school_name: form.school_name, season: form.season, total, cargo_fee: parseFloat(form.cargo_fee) || 0, kutu_bedeli: parseFloat(form.kutu_bedeli) || 0, cargo_date: form.cargo_date || null, cargo_status: 'faturalanmadi', invoice_status: form.invoice_status, dia_status: form.dia_status, note: form.note, status: 'beklemede' }])
+    await supabase.from('orders').insert([{ id: orderId, dealer_id: form.dealer_id, school_name: form.school_name, season: form.season, total, cargo_fee: parseFloat(form.cargo_fee) || 0, kutu_bedeli: parseFloat(form.kutu_bedeli) || 0, kdv_orani: parseFloat(form.kdv_orani) >= 0 ? parseFloat(form.kdv_orani) : DEFAULT_KDV_RATE, kdv_dahil: Boolean(form.kdv_dahil), cargo_date: form.cargo_date || null, cargo_status: 'faturalanmadi', invoice_status: form.invoice_status, dia_status: form.dia_status, note: form.note, status: 'beklemede' }])
     await supabase.from('order_items').insert([{ order_id: orderId, product_id: parseInt(form.product_id), qty: parseInt(form.qty), unit_price: parseFloat(form.unit_price), free_qty: parseInt(form.free_qty) || 0 }])
     const dealer = dealers.find(d => d.id === form.dealer_id)
     await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', form.dealer_id)
@@ -1069,7 +1106,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       total,
     })
     setModal(false)
-    setForm({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
+    setForm({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', kdv_orani: String(DEFAULT_KDV_RATE), kdv_dahil: false, cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
     loadAll()
   }
 
@@ -1083,12 +1120,32 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 10, flexDirection: isMobile ? 'column' : 'row' }}>
         <h2 style={{ color: COLORS.primary }}>Siparişler</h2>
-        <button style={S.btn()} onClick={() => setModal(true)}>+ Sipariş Ekle</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {/* Tutar gösterimi: KDV Dahil / KDV Hariç */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f8f4ff', borderRadius: 999, padding: '4px 6px' }}>
+            <span style={{ fontSize: 11, color: '#7b7790', fontWeight: 700, paddingLeft: 6 }}>TUTAR:</span>
+            {[{ key: 'dahil', label: 'KDV Dahil' }, { key: 'haric', label: 'KDV Hariç' }].map(option => (
+              <button
+                key={option.key}
+                onClick={() => setKdvViewMode(option.key)}
+                style={{
+                  border: 'none', cursor: 'pointer', borderRadius: 999, padding: '5px 12px',
+                  fontSize: 11, fontWeight: 800,
+                  background: kdvViewMode === option.key ? COLORS.primary : 'transparent',
+                  color: kdvViewMode === option.key ? '#fff' : '#7b7790',
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <button style={S.btn()} onClick={() => setModal(true)}>+ Sipariş Ekle</button>
+        </div>
       </div>
       <div style={S.card}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 960 }}>
           <thead><tr>
-            <th style={S.th}>No</th><th style={S.th}>Bayi</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>Tutar (Kargo Dahil)</th><th style={S.th}>Durum</th><th style={S.th}>Sevk</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
+            <th style={S.th}>No</th><th style={S.th}>Bayi</th><th style={S.th}>Okul</th><th style={S.th}>Sezon</th><th style={S.th}>{kdvViewMode === 'dahil' ? 'Tutar (KDV Dahil)' : 'Tutar (KDV Hariç)'}</th><th style={S.th}>Durum</th><th style={S.th}>Sevk</th><th style={S.th}>Fatura</th><th style={S.th}>Dia</th><th style={S.th}></th>
           </tr></thead>
           <tbody>{orders.map(o => (
             <tr key={o.id}>
@@ -1097,10 +1154,26 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
               <td style={S.td}>{o.school_name || '-'}</td>
               <td style={S.td}>{o.season}</td>
               <td style={S.td}>
-                <strong>{fmt(getOrderTotalWithCargo(o))}</strong>
-                <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam: {fmt(o.total)}</div>
-                <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(getOrderCargoFee(o))}</div>
-                <div style={{ fontSize: 11, color: '#666' }}>Kutu Bedeli: {fmt(getOrderBoxFee(o))}</div>
+                {(() => {
+                  const breakdown = getOrderAmountBreakdown(o)
+                  const shownAmount = kdvViewMode === 'dahil' ? breakdown.gross : breakdown.net
+                  return (
+                    <>
+                      <strong style={{ fontSize: 14 }}>{fmt(shownAmount)}</strong>
+                      <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam: {fmt(o.total)}</div>
+                      <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(getOrderCargoFee(o))}</div>
+                      <div style={{ fontSize: 11, color: '#666' }}>Kutu Bedeli: {fmt(getOrderBoxFee(o))}</div>
+                      <div style={{ height: 1, background: '#eee', margin: '4px 0' }} />
+                      <div style={{ fontSize: 11, color: '#666' }}>KDV Hariç: {fmt(breakdown.net)}</div>
+                      <div style={{ fontSize: 11, color: COLORS.primary, fontWeight: 700 }}>
+                        KDV ({formatKdvRate(breakdown.rate)}): {fmt(breakdown.kdv)}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>
+                        {breakdown.included ? 'Tutarlar KDV dahil girildi' : 'KDV tutarlara eklendi'}
+                      </div>
+                    </>
+                  )
+                })()}
               </td>
               <td style={S.td}>
                 <select value={o.status || 'beklemede'} onChange={e => updateField(o.id, 'status', e.target.value)} style={{ ...S.select, width: 130, fontSize: 11, padding: '4px 8px' }}>
@@ -1141,6 +1214,13 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                 <div><label style={S.label}>Kargo Tutarı</label><input type="number" style={S.input} value={processForm.cargo_fee} onChange={e => setProcessForm(p => ({ ...p, cargo_fee: e.target.value }))} /></div>
                 <div><label style={S.label}>Ücretsiz Set Adedi</label><input type="number" style={S.input} value={processForm.free_qty} onChange={e => setProcessForm(p => ({ ...p, free_qty: e.target.value }))} /></div>
                 <div><label style={S.label}>Kutu Bedeli</label><input type="number" style={S.input} value={processForm.kutu_bedeli} onChange={e => setProcessForm(p => ({ ...p, kutu_bedeli: e.target.value }))} /></div>
+                <div><label style={S.label}>KDV Oranı (%)</label><input type="number" min="0" step="0.1" style={S.input} value={processForm.kdv_orani} onChange={e => setProcessForm(p => ({ ...p, kdv_orani: e.target.value }))} placeholder="20" /></div>
+                <div><label style={S.label}>KDV Durumu</label>
+                  <select style={S.select} value={processForm.kdv_dahil ? 'dahil' : 'haric'} onChange={e => setProcessForm(p => ({ ...p, kdv_dahil: e.target.value === 'dahil' }))}>
+                    <option value="haric">KDV Hariç (üzerine eklenir)</option>
+                    <option value="dahil">KDV Dahil (tutarın içinde)</option>
+                  </select>
+                </div>
                 <div><label style={S.label}>Kargo Durumu</label>
                   <select style={S.select} value={processForm.cargo_status} onChange={e => setProcessForm(p => ({ ...p, cargo_status: e.target.value }))}>
                     <option value="faturalanmadi">Faturalanmadı</option>
@@ -1148,6 +1228,24 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                   </select>
                 </div>
               </div>
+              {/* Canlı KDV önizlemesi */}
+              {selectedOrder && (() => {
+                const previewOrder = {
+                  total: selectedOrder.total,
+                  cargo_fee: processForm.cargo_fee,
+                  kutu_bedeli: processForm.kutu_bedeli,
+                  kdv_orani: processForm.kdv_orani,
+                  kdv_dahil: processForm.kdv_dahil,
+                }
+                const breakdown = getOrderAmountBreakdown(previewOrder)
+                return (
+                  <div style={{ marginTop: 12, padding: 10, background: '#fff', borderRadius: 8, border: '1px solid #e6dcff', textAlign: 'right' }}>
+                    <div style={{ fontSize: 12, color: '#666' }}>KDV Hariç: <strong>{fmt(breakdown.net)}</strong></div>
+                    <div style={{ fontSize: 12, color: COLORS.teal }}>KDV ({formatKdvRate(breakdown.rate)}): <strong>{fmt(breakdown.kdv)}</strong></div>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: COLORS.primary, marginTop: 2 }}>Genel Toplam: {fmt(breakdown.gross)}</div>
+                  </div>
+                )
+              })()}
             </div>
 
             {/* Sınıf Dağılımı */}
@@ -1236,13 +1334,41 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
               <div><label style={S.label}>Ücretsiz Adet</label><input type="number" style={S.input} value={form.free_qty} onChange={e => setForm(p => ({ ...p, free_qty: e.target.value }))} /></div>
               <div><label style={S.label}>Kargo Tutarı</label><input type="number" style={S.input} value={form.cargo_fee} onChange={e => setForm(p => ({ ...p, cargo_fee: e.target.value }))} /></div>
               <div><label style={S.label}>Kutu Bedeli</label><input type="number" style={S.input} value={form.kutu_bedeli} onChange={e => setForm(p => ({ ...p, kutu_bedeli: e.target.value }))} /></div>
+              <div><label style={S.label}>KDV Oranı (%)</label><input type="number" min="0" step="0.1" style={S.input} value={form.kdv_orani} onChange={e => setForm(p => ({ ...p, kdv_orani: e.target.value }))} placeholder="20" /></div>
+              <div><label style={S.label}>KDV Durumu</label>
+                <select style={S.select} value={form.kdv_dahil ? 'dahil' : 'haric'} onChange={e => setForm(p => ({ ...p, kdv_dahil: e.target.value === 'dahil' }))}>
+                  <option value="haric">KDV Hariç (üzerine eklenir)</option>
+                  <option value="dahil">KDV Dahil (tutarın içinde)</option>
+                </select>
+              </div>
               <div><label style={S.label}>Sevk Tarihi</label><input type="date" style={S.input} value={form.cargo_date} onChange={e => setForm(p => ({ ...p, cargo_date: e.target.value }))} /></div>
               <div><label style={S.label}>Fatura</label><select style={S.select} value={form.invoice_status} onChange={e => setForm(p => ({ ...p, invoice_status: e.target.value }))}><option value="kesilmedi">Kesilmedi</option><option value="kesildi">Kesildi</option></select></div>
             </div>
             <div style={{ marginTop: 14 }}><label style={S.label}>Not</label><input style={S.input} value={form.note} onChange={e => setForm(p => ({ ...p, note: e.target.value }))} /></div>
             <div style={{ background: '#f8f4ff', borderRadius: 10, padding: 12, marginTop: 14, textAlign: 'right' }}>
-              <span style={{ fontSize: 13, color: '#888' }}>Toplam: </span>
-              <span style={{ fontSize: 20, fontWeight: 800, color: COLORS.primary }}>{fmt(total)}</span>
+              {(() => {
+                const previewOrder = {
+                  total,
+                  cargo_fee: form.cargo_fee,
+                  kutu_bedeli: form.kutu_bedeli,
+                  kdv_orani: form.kdv_orani,
+                  kdv_dahil: form.kdv_dahil,
+                }
+                const breakdown = getOrderAmountBreakdown(previewOrder)
+                return (
+                  <>
+                    <div style={{ fontSize: 12, color: '#888' }}>Ürün toplamı: {fmt(total)}</div>
+                    <div style={{ fontSize: 12, color: '#888' }}>Kargo + Kutu: {fmt(parseMoney(form.cargo_fee) + parseMoney(form.kutu_bedeli))}</div>
+                    <div style={{ height: 1, background: '#e6dcff', margin: '6px 0' }} />
+                    <div style={{ fontSize: 13, color: '#666' }}>KDV Hariç: <strong>{fmt(breakdown.net)}</strong></div>
+                    <div style={{ fontSize: 13, color: COLORS.teal }}>KDV ({formatKdvRate(breakdown.rate)}): <strong>{fmt(breakdown.kdv)}</strong></div>
+                    <div style={{ marginTop: 4 }}>
+                      <span style={{ fontSize: 13, color: '#888' }}>Genel Toplam (KDV Dahil): </span>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: COLORS.primary }}>{fmt(breakdown.gross)}</span>
+                    </div>
+                  </>
+                )
+              })()}
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: isMobile ? 'flex-start' : 'flex-end', marginTop: 20, flexDirection: isMobile ? 'column' : 'row' }}>
               <button style={S.btn('#aaa')} onClick={() => setModal(false)}>İptal</button>

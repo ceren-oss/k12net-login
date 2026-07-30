@@ -14,170 +14,223 @@ const GRADES = ['4 Yaş', '5-6 Yaş', '1. Sınıf', '2. Sınıf', '3. Sınıf', 
 const PRODUCT_MARKER_GRADE = '__URUN__'
 const ACTIVITY_MARKER_GRADE = '__ETKINLIK__'
 const STEM_BRANCH_PREFIX = '__STEM__'
+// Kaynak: ARGE - Keşif Kutusu.pdf + ARGE - 8. Sınıf.pdf (ARGE onaylı, broşür sırası)
+// Her seviye 1.Dönem / 2.Dönem olarak İKİ AYRI BLOK halinde tutulur.
+// Toplam 152 etkinlik. 8. Sınıf istisna: sadece 8 etkinlik (4+4).
+const TERMS = ['1.Dönem', '2.Dönem']
 const ACTIVITY_OPTIONS_BY_GRADE = {
-  '4 Yaş': [
-    'Köpüren Dinozor',
-    'Dinozorlar Nerede?',
-    'Benim Vücudum',
-    'Galaksi Kavanozum',
-    'Duygularımı Keşfediyorum',
-    'Sevimli Balık',
-    'Yağmuru Gözlemle!',
-    'Islanmayan Resim',
-    'Renklerin Gizemi',
-    'Bilim Kokusu',
-    'İz Peşinde',
-    'Çılgın Bilim',
-    'Büyüteçle Keşif Zamanı',
-    'Keşif Dürbünü',
-    'Bitki Hazinem',
-    'Kuş Yemliği',
-  ],
-  '5-6 Yaş': [
-    'İlk Sabunum',
-    'Benim Galaksim',
-    'Yapay Kar',
-    'Gölge oyunu / Şekiller',
-    'Üflemeden Balon Şişer Mi?',
-    'Kayan Balık',
-    'Renklerin Ahengi',
-    'Sınıfımda Müze',
-    'Canavar Poşet',
-    'Su Döngüsü',
-    'Orman Katmanları Modeli',
-    'Yanardağ Patlıyor!',
-    'Canlıların Yaşam Döngüsü',
-    'Rüzgar Gülü Yapıyorum',
-    'Sesle Zıplayan Toplar',
-    'Bitkimi Yetiştiriyorum',
-  ],
-  '1. Sınıf': [
-    'Bilimle Boyama',
-    'Ses Topu',
-    'Ay Taşı Yapalım!',
-    'Doğanın Kokusu',
-    'Keşif Aracı',
-    'Güvenli Şehrim',
-    'Dans Eden Kemikler',
-    'Benim Sağlıklı Tabağım',
-    'Nasıl Nefes Alıyoruz?',
-    'Lav Lambası',
-    'Ülkemin Güzellikleri',
-    'Işıklı Uçağım',
-    'Tohum Günlüğü',
-    'Büyüteç Yapımı',
-    'Mis Kokulu Kremim',
-    'Rüzgar Dedektifleri',
-  ],
-  '2. Sınıf': [
-    'Renkli Köpükler',
-    'Minik Dostuma Hediye',
-    'İlk Diş Macunum',
-    'Vitamin Avcıları',
-    'Siren Üretimi',
-    'Katı mı? Sıvı mı?',
-    'Rüzgar Türbinim',
-    'Parmak İzim',
-    'STEM Deprem Etkinliği',
-    'Tarihi Şekillendir',
-    'İklim Kahramanları',
-    'Hortum Oluşumu',
-    'Ekolojik Denge',
-    'Işıldayan Kart',
-    'Model Uçak',
-    'Mikro Filiz',
-  ],
-  '3. Sınıf': [
-    "Dünya'nın Katmanları",
-    '3-2-1 Fırla!',
-    'Kurbağanın Yaşam Döngüsü',
-    'Parfüm Üretimi',
-    'Madenciler İş Başında!',
-    'Gizemli Hâller',
-    'Karışımların Ayrılması',
-    'Medeniyet Hamuru',
-    'Hava ile Giden Araba',
-    'Mancınıkla Fırlat',
-    'Elektriğin Gücü',
-    'Kar Küresi',
-    'Belirteç Deneyi',
-    'Tohum Topu',
-    'Çiftlik Evim',
-    'Yaşam Kürem',
-  ],
-  '4. Sınıf': [
-    'Paleontologlar İş Başında',
-    'Gece Gündüz Oluşumu',
-    'Tabağımı Keşfediyorum',
-    'Şekerimin Dozu',
-    'Suda Giden Gemi',
-    'Mıknatısın Gücü',
-    'Yoğunluk Kulesi',
-    'Terazi Yapıyorum',
-    'Karışımların Ayrılması',
-    'Girişimcilik',
-    'Kaleydoskop',
-    'Sesten Harekete',
-    'Karbon Ayak İzimiz',
-    'Damla Sulama Yapalım!',
-    'Ledli Bileklik',
-    'İletkenlik Test Kiti',
-  ],
-  '5. Sınıf': [
-    'Ayın Evreleri',
-    'Güneş, Dünya ve Ay’ın Yolculuğu',
-    'Dinamometre Yapımı',
-    'Sürtünme Kuvvetinin Etkisi',
-    'Bitki Hücresi',
-    'İskeletim Nerede?',
-    'Işığın Yolu',
-    'Işık Geçirgenlik Test Kiti',
-    'Gölgelerin Gücü Adına',
-    'Güneş Saati',
-    'Maddenin Doğası',
-    'Termometre Yapımı',
-    'Aydınlık Bir Gece',
-    'Ampulüm Parlak',
-    'Atıktan Filize',
-    'Sürdürülebilir Enerji!',
-  ],
-  '6. Sınıf': [
-    'Güneş Sistemi Projektörü',
-    'Tutulmalar',
-    'Bileşke Kuvvet',
-    'Yolculuk',
-    'Hücreler İş Başında!',
-    'Güneş, Su, Mineral',
-    'Beyin Devreleri',
-    'Periskop',
-    'Renk Çarkı',
-    'Mum Yapımı',
-    'Yoğunluk Tayini',
-    'İletkenlik Avcıları',
-    'Direnç Keşfi',
-    'Teraryum Yapıyorum',
-    'Temiz Suya Nasıl Ulaşırım?',
-    'Krem Üretimi',
-  ],
-  '7. Sınıf': [
-    'Teleskop Yapımı',
-    'Uydu Modeli',
-    'Kuvvetle İş Başında',
-    'Enerji Kulesi',
-    'Hidrolik Fren',
-    'Büyük ve Küçük Kan Dolaşımı',
-    'Solunum Sistemi Modeli',
-    'Böbrekler Nasıl Süzüyor?',
-    'Yanıltan Ok',
-    'Işığın Kırılması',
-    'Maddenin Yapısı',
-    'Karışımlar',
-    'Karışımları Ayıralım',
-    'Elektroskop',
-    'Kireç Suyu Neden Bulanır?',
-    'Hayal Et, Tasarla, Üret',
-  ],
-  '8. Sınıf': [],
+  '4 Yaş': {
+    '1.Dönem': [
+      'Köpüren Dinozor',
+      'Dinozorlar Nerede?',
+      'Benim Vücudum',
+      'Galaksi Kavanozum',
+      'Duygularımı Keşfediyorum',
+      'Sevimli Balık',
+      'Yağmuru Gözlemle!',
+      'Islanmayan Resim',
+    ],
+    '2.Dönem': [
+      'Renklerin Gizemi',
+      'Bilim Kokusu',
+      'İz Peşinde',
+      'Çılgın Bilim',
+      'Büyüteçle Keşif Zamanı',
+      'Keşif Dürbünü',
+      'Bitki Hazinem',
+      'Kuş Yemliği',
+    ],
+  },
+  '5-6 Yaş': {
+    '1.Dönem': [
+      'İlk Sabunum',
+      'Benim Galaksim',
+      'Yapay Kar',
+      'Gölge Oyunu / Şekiller',
+      'Üflemeden Balon Şişer Mi?',
+      'Kayan Balık',
+      'Renklerin Ahengi',
+      'Sınıfımda Müze',
+    ],
+    '2.Dönem': [
+      'Canavar Poşet',
+      'Su Döngüsü',
+      'Orman Katmanları Modeli',
+      'Yanardağ Patlıyor!',
+      'Canlıların Yaşam Döngüsü',
+      'Rüzgar Gülü Yapıyorum',
+      'Sesle Zıplayan Toplar',
+      'Bitkimi Yetiştiriyorum',
+    ],
+  },
+  '1. Sınıf': {
+    '1.Dönem': [
+      'Bilimle Boyama',
+      'Ses Topu',
+      'Ay Taşı Yapalım!',
+      'Doğanın Kokusu',
+      'Keşif Aracı',
+      'Güvenli Şehrim',
+      'Dans Eden Kemikler',
+      'Benim Sağlıklı Tabağım',
+    ],
+    '2.Dönem': [
+      'Nasıl Nefes Alıyoruz?',
+      'Lav Lambası',
+      'Ülkemin Güzellikleri',
+      'Işıklı Uçağım',
+      'Tohum Günlüğü',
+      'Büyüteç Yapımı',
+      'Mis Kokulu Kremim',
+      'Rüzgar Dedektifleri',
+    ],
+  },
+  '2. Sınıf': {
+    '1.Dönem': [
+      'Renkli Köpükler',
+      'Minik Dostuma Hediye',
+      'İlk Diş Macunum',
+      'Vitamin Avcıları',
+      'Siren Üretimi',
+      'Katı mı? Sıvı mı?',
+      'Rüzgar Türbinim',
+      'Parmak İzim',
+    ],
+    '2.Dönem': [
+      'STEM Deprem Etkinliği',
+      'Tarihi Şekillendir',
+      'İklim Kahramanları',
+      'Hortum Oluşumu',
+      'Ekolojik Denge',
+      'Işıldayan Kart',
+      'Model Uçak',
+      'Mikro Filiz',
+    ],
+  },
+  '3. Sınıf': {
+    '1.Dönem': [
+      'Dünya\'nın Katmanları',
+      '3-2-1 Fırla!',
+      'Kurbağanın Yaşam Döngüsü',
+      'Parfüm Üretimi',
+      'Madenciler İş Başında!',
+      'Gizemli Hâller',
+      'Karışımların Ayrılması',
+      'Medeniyet Hamuru',
+    ],
+    '2.Dönem': [
+      'Hava ile Giden Araba',
+      'Mancınıkla Fırlat',
+      'Elektriğin Gücü',
+      'Kar Küresi',
+      'Belirteç Deneyi',
+      'Tohum Topu',
+      'Çiftlik Evim',
+      'Yaşam Kürem',
+    ],
+  },
+  '4. Sınıf': {
+    '1.Dönem': [
+      'Paleontologlar İş Başında',
+      'Gece Gündüz Oluşumu',
+      'Tabağımı Keşfediyorum',
+      'Şekerimin Dozu',
+      'Suda Giden Gemi',
+      'Mıknatısın Gücü',
+      'Yoğunluk Kulesi',
+      'Terazi Yapıyorum',
+    ],
+    '2.Dönem': [
+      'Karışımların Ayrılması',
+      'Girişimcilik',
+      'Kaleydoskop',
+      'Sesten Harekete',
+      'Karbon Ayak İzimiz',
+      'Damla Sulama Yapalım!',
+      'Ledli Bileklik',
+      'İletkenlik Test Kiti',
+    ],
+  },
+  '5. Sınıf': {
+    '1.Dönem': [
+      'Ayın Evreleri',
+      'Güneş, Dünya ve Ay\'ın Yolculuğu',
+      'Dinamometre Yapımı',
+      'Sürtünme Kuvvetinin Etkisi',
+      'Bitki Hücresi',
+      'İskeletim Nerede?',
+      'Işığın Yolu',
+      'Işık Geçirgenlik Test Kiti',
+    ],
+    '2.Dönem': [
+      'Gölgelerin Gücü Adına',
+      'Güneş Saati',
+      'Maddenin Doğası',
+      'Termometre Yapımı',
+      'Aydınlık Bir Gece',
+      'Ampulüm Parlak',
+      'Atıktan Filize',
+      'Sürdürülebilir Enerji!',
+    ],
+  },
+  '6. Sınıf': {
+    '1.Dönem': [
+      'Güneş Sistemi Projektörü',
+      'Tutulmalar',
+      'Bileşke Kuvvet',
+      'Yolculuk',
+      'Hücreler İş Başında!',
+      'Güneş, Su, Mineral',
+      'Beyin Devreleri',
+      'Periskop',
+    ],
+    '2.Dönem': [
+      'Renk Çarkı',
+      'Mum Yapımı',
+      'Yoğunluk Tayini',
+      'İletkenlik Avcıları',
+      'Direnç Keşfi',
+      'Teraryum Yapıyorum',
+      'Temiz Suya Nasıl Ulaşırım?',
+      'Krem Üretimi',
+    ],
+  },
+  '7. Sınıf': {
+    '1.Dönem': [
+      'Teleskop Yapımı',
+      'Uydu Modeli',
+      'Kuvvetle İş Başında',
+      'Enerji Kulesi',
+      'Hidrolik Fren',
+      'Büyük ve Küçük Kan Dolaşımı',
+      'Solunum Sistemi Modeli',
+      'Böbrekler Nasıl Süzüyor?',
+    ],
+    '2.Dönem': [
+      'Yanıltan Ok',
+      'Işığın Kırılması',
+      'Maddenin Yapısı',
+      'Karışımlar',
+      'Karışımları Ayıralım',
+      'Elektroskop',
+      'Kireç Suyu Neden Bulanır?',
+      'Hayal Et, Tasarla, Üret',
+    ],
+  },
+  '8. Sınıf': {
+    '1.Dönem': [
+      'Güneş-Dünya-Ay',
+      'Ben Kimim?',
+      'Hidrolik Otopark',
+      'pH Kaç?',
+    ],
+    '2.Dönem': [
+      'Polimer Sünger Yapımı',
+      'Su Kuyusu Yapımı',
+      'Güneş Enerjili Araç',
+      'Elektroskop',
+    ],
+  },
 }
 const STEM_PLAN_OPTIONS = {
   plan1: {
@@ -334,8 +387,21 @@ const parseStemBranchKey = (branchValue) => {
   if (!match) return null
   return { planKey: match[1], shipmentKey: match[2] }
 }
-const getActivityOptionsForLevel = (level) => ACTIVITY_OPTIONS_BY_GRADE[level] || []
-const PACKAGE_SELECTION_COUNTS = [4, 8, 12, 16]
+// Bir seviyenin dönem bloklarını verir: [{ term, activities }]
+const getActivityBlocksForLevel = (level) => {
+  const grade = ACTIVITY_OPTIONS_BY_GRADE[level]
+  if (!grade) return []
+  return TERMS
+    .map(term => ({ term, activities: grade[term] || [] }))
+    .filter(block => block.activities.length > 0)
+}
+// Dönem ayrımı olmadan, sıralı tüm etkinlikler
+const getActivityOptionsForLevel = (level) => getActivityBlocksForLevel(level)
+  .flatMap(block => block.activities)
+// Bir seviyede toplam kaç etkinlik var (8. Sınıf = 8, diğerleri = 16)
+const getMaxActivitiesForLevel = (level) => getActivityOptionsForLevel(level).length
+// Paket boyutları: 6'lı, 9'lu, 10'lu da satılıyor
+const PACKAGE_SELECTION_COUNTS = [4, 6, 8, 9, 10, 12, 16]
 const parsePackageSizeFromName = (name) => {
   const match = (name || '').match(/(\d+)\s*['’]?\s*l(?:ı|i|u|ü)/i)
   if (!match) return null
@@ -353,6 +419,25 @@ const getPackageSelectionConfigs = (orderItems, productsById) => {
     }
   }
   return Object.values(found).sort((a, b) => a.count - b.count)
+}
+// ÖNEMLİ: paket tipi SEVİYE BAZINDA belirlenir.
+// Ön sipariş satırlarında grade alanı var; her seviye kendi ürününe göre değerlendirilir.
+// (Eskiden global kontrol vardı: siparişte tek bir 16'lı satır olsa TÜM seviyeler
+//  16'lı sayılıyordu. Sipariş formunda 4 yaş 16'lı, 5-6 yaş 8'li olabiliyor.)
+const getPackageCountByLevel = (orderItems, productsById) => {
+  const byLevel = {}
+  for (const item of orderItems || []) {
+    const level = String(item.grade || '').trim()
+    // Ön sipariş satırlarında grade '-' olarak kaydedilebiliyor; bunu seviye saymayız
+    if (!level || level === '-') continue
+    const orderQty = parseInt(item.qty, 10) || 0
+    if (orderQty <= 0) continue
+    const count = parsePackageSizeFromName(productsById[item.product_id] || '')
+    if (!PACKAGE_SELECTION_COUNTS.includes(count)) continue
+    // Aynı seviyede birden fazla ürün varsa en büyüğünü esas al
+    if (!byLevel[level] || count > byLevel[level]) byLevel[level] = count
+  }
+  return byLevel
 }
 const getPackageInfoText = (packageConfigs = []) => {
   if (!packageConfigs.length) return ''
@@ -429,6 +514,8 @@ export default function SchoolForm({ token }) {
 
   // Okul bilgileri
   const [schoolName, setSchoolName] = useState('')
+  const [cariAdi, setCariAdi] = useState('')
+  const [formError, setFormError] = useState('')
   const [taxNo, setTaxNo] = useState('')
   const [taxOffice, setTaxOffice] = useState('')
   const [address, setAddress] = useState('')
@@ -458,6 +545,7 @@ export default function SchoolForm({ token }) {
     // Daha once doldurulmusse yukle
     if (formData.school_name) {
       setSchoolName(formData.school_name)
+      setCariAdi(formData.cari_adi || '')
       setTaxNo(formData.tax_no || '')
       setTaxOffice(formData.tax_office || '')
       setAddress(formData.address || '')
@@ -471,6 +559,10 @@ export default function SchoolForm({ token }) {
       supabase.from('pre_orders').select('*, pre_order_items(*)').eq('id', formData.pre_order_id).single(),
       supabase.from('products').select('id, name'),
     ])
+    // Cari adı formda boşsa ön siparişten devral
+    if (po?.cari_adi) {
+      setCariAdi(prev => prev || po.cari_adi)
+    }
     const productMap = {}
     if (productRows) {
       productRows.forEach(product => { productMap[product.id] = product.name })
@@ -508,7 +600,7 @@ export default function SchoolForm({ token }) {
         if (i.grade === PRODUCT_MARKER_GRADE) {
           const level = String(i.branch || '').trim()
           const savedPackageCount = parseInt(i.qty, 10) || parsePackageSizeFromName(i.teacher || '')
-          if (level && [4, 8, 12].includes(savedPackageCount)) {
+          if (level && PACKAGE_SELECTION_COUNTS.includes(savedPackageCount)) {
             selectedPackageBySavedLevel[level] = savedPackageCount
           }
           return
@@ -544,11 +636,36 @@ export default function SchoolForm({ token }) {
         setSelectedPackageByLevel(selectedPackageBySavedLevel)
       }
     } else if (po) {
-      const forecastRows = getForecastRowsFromPreOrderNote(po.note)
-      const classRowsFromForecast = buildClassRowsFromForecast(forecastRows)
-      if (classRowsFromForecast.length > 0) {
-        setClassItems(classRowsFromForecast)
+      // 1) Ön sipariş satırlarında gerçek seviye varsa oradan kur (asıl kaynak).
+      //    Excel'de "SINIF | ÜRÜN | ADET" olarak girildiği için seviye ↔ paket bağı burada.
+      const levelQtyFromItems = new Map()
+      for (const item of (po.pre_order_items || [])) {
+        const level = String(item.grade || '').trim()
+        const itemQty = parseInt(item.qty, 10) || 0
+        if (!level || level === '-' || itemQty <= 0) continue
+        levelQtyFromItems.set(level, (levelQtyFromItems.get(level) || 0) + itemQty)
+      }
+      const classRowsFromItems = GRADES
+        .filter(grade => levelQtyFromItems.has(grade))
+        .map(grade => ({
+          grade,
+          branch: '',
+          teacher: '',
+          teacher_email: '',
+          teacher_phone: '',
+          qty: String(levelQtyFromItems.get(grade)),
+        }))
+      if (classRowsFromItems.length > 0) {
+        setClassItems(classRowsFromItems)
         setIsAutoFilledMode(true)
+      } else {
+        // 2) Yoksa eski yola dön: nottaki sınıf dağılımı
+        const forecastRows = getForecastRowsFromPreOrderNote(po.note)
+        const classRowsFromForecast = buildClassRowsFromForecast(forecastRows)
+        if (classRowsFromForecast.length > 0) {
+          setClassItems(classRowsFromForecast)
+          setIsAutoFilledMode(true)
+        }
       }
     }
 
@@ -563,24 +680,61 @@ export default function SchoolForm({ token }) {
   const qtyMismatchMessage = getOrderQtyMismatchMessage(orderItems, classItems)
   const packageSelectionConfigs = getPackageSelectionConfigs(orderItems, productsById)
   const packageCounts = packageSelectionConfigs.map(config => config.count)
-  const selectablePackageConfigs = packageSelectionConfigs.filter(config => [4, 8, 12].includes(config.count))
+  // Tüm paket boyutları seçilebilir (6'lı, 9'lu, 10'lu dahil)
+  const selectablePackageConfigs = packageSelectionConfigs
   const selectablePackageCounts = selectablePackageConfigs.map(config => config.count)
   const stemPlanConfigs = getStemPlanConfigs(orderItems, productsById)
-  const shouldShowPackageSelection = selectablePackageCounts.length > 0 && !packageCounts.includes(16)
+  // Seviye bazlı paket haritası (ön sipariş satırlarındaki grade alanından)
+  const packageCountByLevel = getPackageCountByLevel(orderItems, productsById)
   const hasMultiplePackageOptions = selectablePackageCounts.length > 1
-  const shouldShowReadOnlyProductList = packageCounts.includes(16)
   const shouldShowStemSelection = stemPlanConfigs.length > 0
   const isApproved = form?.status === 'onaylandi'
   const approvalDateText = preOrder?.onaylanma_tarihi ? new Date(preOrder.onaylanma_tarihi).toLocaleString('tr-TR') : ''
   const activeLevels = [...new Set(classItems.filter(i => i.grade && parseInt(i.qty) > 0).map(i => i.grade))]
-  const getLevelPackageCount = (level) => {
-    if (!shouldShowPackageSelection) return null
-    if (!hasMultiplePackageOptions) return selectablePackageCounts[0]
-    const selectedCount = parseInt(selectedPackageByLevel[level], 10)
-    return selectablePackageCounts.includes(selectedCount) ? selectedCount : null
+  // Bir seviyenin geçerli paket adedi.
+  // ÜST SINIR KURALI: seçilebilecek etkinlik sayısı, o seviyede VAR OLAN
+  // etkinlik sayısını asla geçemez. 8. Sınıf'ta 8 etkinlik olduğu için
+  // 8. Sınıf'a hiçbir koşulda 8'den fazla ürün seçilemez.
+  const clampToLevelCapacity = (level, count) => {
+    const maxForLevel = getMaxActivitiesForLevel(level)
+    if (!count) return null
+    if (!maxForLevel) return count
+    return Math.min(count, maxForLevel)
   }
+  const getLevelPackageCount = (level) => {
+    // 1) Ön siparişte bu seviye için paket belirtilmişse onu kullan (asıl kaynak)
+    const fromOrder = packageCountByLevel[level]
+    if (fromOrder) return clampToLevelCapacity(level, fromOrder)
+    // 2) Siparişte tek paket tipi varsa onu tüm seviyelere uygula
+    if (selectablePackageCounts.length === 1) return clampToLevelCapacity(level, selectablePackageCounts[0])
+    // 3) Aksi halde kullanıcının o seviye için elle seçimini kullan
+    const selectedCount = parseInt(selectedPackageByLevel[level], 10)
+    return selectablePackageCounts.includes(selectedCount)
+      ? clampToLevelCapacity(level, selectedCount)
+      : null
+  }
+  // Paket adedi, o seviyedeki TÜM etkinlikleri kapsıyorsa seçim gerekmez.
+  // (16'lı seviyeler; ayrıca 8. Sınıf'ta 8'li paket = 8 etkinliğin tamamı.)
+  const isFullPackageLevel = (level) => {
+    const count = getLevelPackageCount(level)
+    const maxForLevel = getMaxActivitiesForLevel(level)
+    return Boolean(count && maxForLevel && count >= maxForLevel)
+  }
+  const levelsNeedingSelection = activeLevels.filter(level => !isFullPackageLevel(level))
+  const levelsWithFullPackage = activeLevels.filter(level => isFullPackageLevel(level))
+  const shouldShowPackageSelection = levelsNeedingSelection.length > 0
+  const shouldShowReadOnlyProductList = levelsWithFullPackage.length > 0
+  // Kullanıcı bu seviye için paket tipini elle seçmek zorunda mı?
+  const needsManualPackageChoice = (level) => !packageCountByLevel[level] && selectablePackageCounts.length > 1
   const setLevelPackageCount = (level, nextCountRaw) => {
-    const nextCount = parseInt(nextCountRaw, 10)
+    const nextCountRawParsed = parseInt(nextCountRaw, 10)
+    const maxForLevel = getMaxActivitiesForLevel(level)
+    // Kapasiteyi aşan paket seçimini engelle (8. Sınıf > 8 olamaz)
+    if (maxForLevel && nextCountRawParsed > maxForLevel) {
+      alert(`${level} seviyesinde toplam ${maxForLevel} etkinlik bulunuyor. ${nextCountRawParsed}'li paket seçilemez.`)
+      return
+    }
+    const nextCount = nextCountRawParsed
     if (!selectablePackageCounts.includes(nextCount)) {
       setSelectedPackageByLevel(prev => {
         const next = { ...prev }
@@ -634,8 +788,8 @@ export default function SchoolForm({ token }) {
   const selectedActivitySummary = [
     ...activeLevels.map(level => ({
       level,
-      packageCount: shouldShowReadOnlyProductList ? 16 : getLevelPackageCount(level),
-      activities: shouldShowReadOnlyProductList
+      packageCount: isFullPackageLevel(level) ? getMaxActivitiesForLevel(level) : getLevelPackageCount(level),
+      activities: isFullPackageLevel(level)
         ? getActivityOptionsForLevel(level)
         : formatActivityListWithCounts(getValidSelectedActivities(level))
     })),
@@ -648,7 +802,8 @@ export default function SchoolForm({ token }) {
       .filter(([, activities]) => (activities || []).length > 0)
   )
   const getFormValidationError = () => {
-    if (!schoolName) return 'Kurum adı zorunludur.'
+    if (!String(schoolName || '').trim()) return 'Kurum adı zorunludur.'
+    if (!String(cariAdi || '').trim()) return 'Cari adı zorunludur.'
     if (!taxNo || !taxOffice || !address || !contactName || !contactPhone || !contactEmail) return 'Vergi, adres ve yetkili bilgileri eksiksiz doldurulmalıdır.'
     const validItems = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
     if (validItems.length === 0) return 'En az bir sınıf satırı doldurulmalıdır.'
@@ -660,12 +815,18 @@ export default function SchoolForm({ token }) {
     )
     if (invalidTeacherInfoRow) return `${invalidTeacherInfoRow.grade || 'Seçili sınıf'} satırında şube, öğretmen adı, mail ve telefon zorunludur.`
     if (qtyMismatchMessage) return qtyMismatchMessage
-    if (shouldShowPackageSelection) {
-      if (hasMultiplePackageOptions) {
-        const missingPackageLevel = activeLevels.find(level => !getLevelPackageCount(level))
-        if (missingPackageLevel) return `${missingPackageLevel} için paket tipini seçiniz.`
-      }
-      const invalidSelection = activeLevels.map(level => {
+    if (levelsNeedingSelection.length > 0) {
+      const missingPackageLevel = levelsNeedingSelection.find(level => !getLevelPackageCount(level))
+      if (missingPackageLevel) return `${missingPackageLevel} için paket tipini seçiniz.`
+      // Seviyede var olan etkinlik sayısından fazla paket seçilemez
+      // (8. Sınıf'ta yalnızca 8 etkinlik var; 12'li/16'lı seçilemez.)
+      const overCapacityLevel = levelsNeedingSelection.map(level => {
+        const maxForLevel = getMaxActivitiesForLevel(level)
+        const required = getLevelPackageCount(level) || 0
+        return maxForLevel > 0 && required > maxForLevel ? { level, required, maxForLevel } : null
+      }).find(Boolean)
+      if (overCapacityLevel) return `${overCapacityLevel.level} için en fazla ${overCapacityLevel.maxForLevel} etkinlik bulunuyor, ${overCapacityLevel.required}'li paket seçilemez.`
+      const invalidSelection = levelsNeedingSelection.map(level => {
         const availableOptions = getActivityOptionsForLevel(level)
         if (availableOptions.length === 0) return null
         const selectedForLevel = getValidSelectedActivities(level)
@@ -701,13 +862,41 @@ export default function SchoolForm({ token }) {
     const selected = selectedActivitiesByLevel[grade] || []
     return selected.filter(name => name === activityName).length
   }
+  // Etkinlik seçimi TİK ile yapılır: seçili = 1, değil = 0. Adet girişi yok.
+  const isActivitySelected = (grade, activityName) => getActivityCount(grade, activityName) > 0
+  const toggleActivity = (grade, activityName) => {
+    setSelectedActivitiesByLevel(prev => {
+      const current = prev[grade] || []
+      const availableOptions = getActivityOptionsForLevel(grade)
+      const validCurrent = current.filter(activity => availableOptions.includes(activity))
+      const alreadySelected = validCurrent.includes(activityName)
+      if (alreadySelected) {
+        return { ...prev, [grade]: validCurrent.filter(name => name !== activityName) }
+      }
+      // Sert üst sınır: paket adedi ve seviye kapasitesi aşılamaz
+      const maxForLevel = getMaxActivitiesForLevel(grade)
+      const limit = Math.min(
+        getLevelPackageCount(grade) || 0,
+        maxForLevel || (getLevelPackageCount(grade) || 0)
+      )
+      // Tik ile seçimde aynı etkinlik tekrar eklenmez, benzersiz liste tutulur
+      const uniqueCurrent = [...new Set(validCurrent)]
+      if (limit && uniqueCurrent.length >= limit) return prev
+      return { ...prev, [grade]: [...uniqueCurrent, activityName] }
+    })
+  }
   const setActivityCount = (grade, activityName, nextCount) => {
     setSelectedActivitiesByLevel(prev => {
       const current = prev[grade] || []
       const availableOptions = getActivityOptionsForLevel(grade)
       const validCurrent = current.filter(activity => availableOptions.includes(activity))
       const safeNextCount = Math.max(0, parseInt(nextCount, 10) || 0)
-      const requiredSelectionsForLevel = getLevelPackageCount(grade) || 0
+      // Sert üst sınır: paket adedi de, seviyedeki etkinlik sayısı da aşılamaz
+      const maxForLevel = getMaxActivitiesForLevel(grade)
+      const requiredSelectionsForLevel = Math.min(
+        getLevelPackageCount(grade) || 0,
+        maxForLevel || (getLevelPackageCount(grade) || 0)
+      )
       const currentCount = validCurrent.filter(name => name === activityName).length
       const withoutCurrent = validCurrent.length - currentCount
       const maxAllowedForActivity = Math.max(requiredSelectionsForLevel - withoutCurrent, 0)
@@ -728,10 +917,16 @@ export default function SchoolForm({ token }) {
   }
 
   const save = async () => {
-    if (!schoolName) { alert('Kurum adı zorunludur!'); return }
     if (isApproved) { alert('Bu form bayi tarafından onaylandı, artık güncellenemez.'); return }
+    // Eksik alan varsa SESSİZ KALMA — kullanıcıya nedenini söyle
     const validationError = getFormValidationError()
-    if (validationError) { alert(validationError); return }
+    if (validationError) {
+      setFormError(validationError)
+      alert(validationError)
+      if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+      return
+    }
+    setFormError('')
     const validItems = classItems.filter(i => i.grade && parseInt(i.qty) > 0)
     setSaving(true)
     const nextStatus = 'form_kaydedildi'
@@ -741,7 +936,10 @@ export default function SchoolForm({ token }) {
       address, contact_name: contactName, contact_phone: contactPhone,
       contact_email: contactEmail, status: nextStatus
     }).eq('id', form.id)
-    await supabase.from('pre_orders').update({ status: nextStatus }).eq('id', form.pre_order_id)
+    // Cari adı ön siparişte tutulur (pre_orders.cari_adi kolonu mevcut)
+    await supabase.from('pre_orders')
+      .update({ status: nextStatus, cari_adi: String(cariAdi || '').trim() })
+      .eq('id', form.pre_order_id)
     setForm(prev => prev ? ({
       ...prev,
       school_name: schoolName,
@@ -753,7 +951,7 @@ export default function SchoolForm({ token }) {
       contact_email: contactEmail,
       status: nextStatus,
     }) : prev)
-    setPreOrder(prev => prev ? ({ ...prev, status: nextStatus }) : prev)
+    setPreOrder(prev => prev ? ({ ...prev, status: nextStatus, cari_adi: String(cariAdi || '').trim() }) : prev)
 
     await supabase.from('school_form_items').delete().eq('form_id', form.id)
     const classRowsToSave = validItems.map(i => ({
@@ -763,11 +961,18 @@ export default function SchoolForm({ token }) {
       teacher_phone: String(i.teacher_phone || '').trim(),
       qty: parseInt(i.qty)
     }))
-    const selectedPackageActivityRows = shouldShowPackageSelection
-      ? activeLevels.flatMap(level => {
+    const selectedPackageActivityRows = levelsNeedingSelection.length > 0
+      ? levelsNeedingSelection.flatMap(level => {
         const availableOptions = getActivityOptionsForLevel(level)
         if (availableOptions.length === 0) return []
-        const selectedForLevel = (selectedActivitiesByLevel[level] || []).filter(activityName => availableOptions.includes(activityName))
+        // Son güvenlik: seviyede var olan etkinlik sayısından fazlası kaydedilmez
+        const capacityForLevel = Math.min(
+          getLevelPackageCount(level) || availableOptions.length,
+          availableOptions.length
+        )
+        const selectedForLevel = (selectedActivitiesByLevel[level] || [])
+          .filter(activityName => availableOptions.includes(activityName))
+          .slice(0, capacityForLevel)
         const countMap = selectedForLevel.reduce((acc, activityName) => {
           acc[activityName] = (acc[activityName] || 0) + 1
           return acc
@@ -783,9 +988,13 @@ export default function SchoolForm({ token }) {
           }))
       })
       : []
-    const selectedPackageLevelRows = shouldShowPackageSelection
+    // TÜM aktif seviyeler için paket işaretçisi yazılır (16'lı olanlar dahil),
+    // böylece detay ekranlarında hangi seviyenin kaçlı set aldığı görünür.
+    const selectedPackageLevelRows = activeLevels.length > 0
       ? activeLevels.flatMap(level => {
-        const packageCount = getLevelPackageCount(level)
+        const packageCount = isFullPackageLevel(level)
+          ? (packageCountByLevel[level] || getMaxActivitiesForLevel(level))
+          : getLevelPackageCount(level)
         if (!packageCount) return []
         return [{
           form_id: form.id,
@@ -867,8 +1076,14 @@ export default function SchoolForm({ token }) {
                     {item.level}
                   </div>
                   {item.packageCount ? (
-                    <div style={{ marginBottom: 8, fontSize: 11, color: '#6b6282', fontWeight: 700 }}>{item.packageCount}'li set</div>
-                  ) : null}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', marginBottom: 8, marginLeft: 6, fontSize: 11, fontWeight: 800, color: '#fff', background: COLORS.primary, borderRadius: 999, padding: '3px 9px' }}>
+                      {item.packageCount}'li set
+                    </span>
+                  ) : (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', marginBottom: 8, marginLeft: 6, fontSize: 11, fontWeight: 800, color: COLORS.orange, background: '#fff7ed', borderRadius: 999, padding: '3px 9px' }}>
+                      paket seçilmedi
+                    </span>
+                  )}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {item.activities.length > 0 ? item.activities.map((activity, idx) => (
                       <span key={`${item.level}-${activity}-${idx}`} style={{ fontSize: 11, fontWeight: 700, color: '#4a4660', background: '#f8f6ff', border: '1px solid #e8e0ff', borderRadius: 999, padding: '4px 8px' }}>
@@ -950,13 +1165,24 @@ export default function SchoolForm({ token }) {
           </div>
         )}
 
+        {formError && (
+          <div style={{ ...S.card, borderLeft: '4px solid ' + COLORS.orange, background: '#fff7ed' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.orange }}>Form gönderilemedi</div>
+            <div style={{ fontSize: 13, color: '#7c2d12', marginTop: 4 }}>{formError}</div>
+          </div>
+        )}
+
         {/* Kurum Bilgileri */}
         <div style={S.card}>
           <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 20 }}>Kurum Bilgileri</div>
           <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 14 }}>
-            <div style={{ gridColumn: isMobile ? 'auto' : '1 / -1' }}>
+            <div>
               <label style={S.label}>Kurum Adı *</label>
               <input style={S.input} value={schoolName} onChange={e => setSchoolName(e.target.value)} placeholder="Okul / Kurum adı" />
+            </div>
+            <div>
+              <label style={S.label}>Cari Adı *</label>
+              <input style={S.input} value={cariAdi} onChange={e => setCariAdi(e.target.value)} placeholder="Faturada yer alacak cari adı" />
             </div>
             <div>
               <label style={S.label}>Vergi No</label>
@@ -1016,6 +1242,31 @@ export default function SchoolForm({ token }) {
                       <select style={{ ...S.select, fontSize: 12, padding: '7px 8px', background: '#fff' }} value={item.grade} onChange={e => updateClassItem(idx, 'grade', e.target.value)}>
                         {GRADES.map(g => <option key={g} value={g}>{g}</option>)}
                       </select>
+                      {/* Seviyenin kaçlı set aldığı sınıf satırında da görünür */}
+                      {(() => {
+                        const rowQty = parseInt(item.qty, 10) || 0
+                        if (!item.grade || rowQty <= 0) return null
+                        const rowPackageCount = getLevelPackageCount(item.grade)
+                        const rowMax = getMaxActivitiesForLevel(item.grade)
+                        return (
+                          <div style={{ marginTop: 5, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                            {rowPackageCount ? (
+                              <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: COLORS.primary, borderRadius: 999, padding: '2px 7px' }}>
+                                {rowPackageCount}'li set
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: 10, fontWeight: 700, color: COLORS.orange, background: '#fff7ed', borderRadius: 999, padding: '2px 7px' }}>
+                                paket seçilmedi
+                              </span>
+                            )}
+                            {rowMax > 0 && (
+                              <span style={{ fontSize: 10, color: '#8a86a0', fontWeight: 600 }}>
+                                (max {rowMax} etkinlik)
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </td>
                     <td style={S.td}>
                       <input style={{ ...S.input, textAlign: 'center', fontSize: 12, padding: '7px 8px', background: '#fff' }} value={item.branch} onChange={e => updateClassItem(idx, 'branch', e.target.value)} placeholder="A" />
@@ -1054,111 +1305,117 @@ export default function SchoolForm({ token }) {
             <div style={{ marginTop: 6, fontSize: 12, color: COLORS.orange }}>{qtyMismatchMessage}</div>
           )}
         </div>
-        {shouldShowPackageSelection && (
+        {/* ÜRÜN SEÇİMİ — SEVİYE BAZLI.
+            Her sınıf seviyesi kendi paketine göre değerlendirilir:
+            16'lı seviyelerde tüm etkinlikler dahildir (seçim yok),
+            diğer seviyelerde paket adedi kadar etkinlik seçilir.
+            Etkinlikler 1.Dönem / 2.Dönem olarak iki ayrı blokta gösterilir. */}
+        {activeLevels.length > 0 && (packageSelectionConfigs.length > 0 || levelsNeedingSelection.length > 0) && (
           <div style={S.card}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>{packageTitleText} Ürün Listesi</div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 14 }}>{packageSelectionInfoText}</div>
-            {activeLevels.length === 0 ? (
-              <div style={{ fontSize: 13, color: '#999' }}>Önce sınıf seviyelerine adet giriniz.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 10 }}>
-                {activeLevels.map(level => {
-                  const availableOptions = getActivityOptionsForLevel(level)
-                  const selectedForLevel = getValidSelectedActivities(level)
-                  const requiredSelectionsForLevel = getLevelPackageCount(level)
-                  const canSelectActivities = Boolean(requiredSelectionsForLevel)
-                  return (
-                    <div key={level} style={{ border: '1px solid #ece6ff', borderRadius: 12, padding: 12, background: '#fff' }}>
-                      <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexDirection: isMobile ? 'column' : 'row' }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.primary }}>{level}</div>
-                        <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
-                          {hasMultiplePackageOptions && (
-                            <select
-                              style={{ ...S.select, width: isMobile ? '100%' : 140, padding: '6px 8px', fontSize: 12 }}
-                              value={requiredSelectionsForLevel || ''}
-                              onChange={e => setLevelPackageCount(level, e.target.value)}
-                            >
-                              <option value="">Paket Seç</option>
-                              {selectablePackageCounts.map(count => (
-                                <option key={`package-${level}-${count}`} value={count}>{count}'li</option>
-                              ))}
-                            </select>
-                          )}
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>Ürün Listesi</div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 14 }}>
+              Her sınıf seviyesi için paket tipine göre etkinlik seçimi yapılır. 16'lı pakette seçim gerekmez, tüm etkinlikler dahildir.
+            </div>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {activeLevels.map(level => {
+                const blocks = getActivityBlocksForLevel(level)
+                const availableOptions = getActivityOptionsForLevel(level)
+                const isFull = isFullPackageLevel(level)
+                const selectedForLevel = getValidSelectedActivities(level)
+                const requiredSelectionsForLevel = isFull ? availableOptions.length : getLevelPackageCount(level)
+                const canSelectActivities = !isFull && Boolean(requiredSelectionsForLevel)
+                const maxForLevel = getMaxActivitiesForLevel(level)
+                const overCapacity = !isFull && requiredSelectionsForLevel > 0 && maxForLevel > 0 && requiredSelectionsForLevel > maxForLevel
+                return (
+                  <div key={level} style={{ border: '1px solid #ece6ff', borderRadius: 12, padding: 12, background: '#fff' }}>
+                    <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexDirection: isMobile ? 'column' : 'row' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: COLORS.primary }}>{level}</span>
+                        {requiredSelectionsForLevel > 0 && (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: '#fff', background: COLORS.primary, borderRadius: 999, padding: '2px 8px' }}>
+                            {requiredSelectionsForLevel}'li set
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
+                        {needsManualPackageChoice(level) && (
+                          <select
+                            style={{ ...S.select, width: isMobile ? '100%' : 140, padding: '6px 8px', fontSize: 12 }}
+                            value={getLevelPackageCount(level) || ''}
+                            onChange={e => setLevelPackageCount(level, e.target.value)}
+                          >
+                            <option value="">Paket Seç</option>
+                            {selectablePackageCounts.filter(count => count <= maxForLevel || maxForLevel === 0).map(count => (
+                              <option key={`package-${level}-${count}`} value={count}>{count}'li</option>
+                            ))}
+                          </select>
+                        )}
+                        {isFull ? (
+                          <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.green }}>Tümü dahil (seçim gerekmez)</div>
+                        ) : (
                           <div style={{ fontSize: 12, fontWeight: 700, color: canSelectActivities && selectedForLevel.length === requiredSelectionsForLevel ? COLORS.green : COLORS.orange }}>
                             {canSelectActivities ? `${selectedForLevel.length}/${requiredSelectionsForLevel} seçildi` : 'Paket seçiniz'}
                           </div>
-                        </div>
+                        )}
                       </div>
-                      {availableOptions.length === 0 ? (
-                        <div style={{ fontSize: 12, color: '#999' }}>Bu seviye için etkinlik listesi bulunamadı.</div>
-                      ) : !canSelectActivities ? (
-                        <div style={{ fontSize: 12, color: '#999' }}>Bu seviyede ürün seçimine başlamadan önce paket tipi seçiniz.</div>
-                      ) : (
-                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
-                          {availableOptions.map(activityName => {
-                            const activityCount = getActivityCount(level, activityName)
-                            const canIncrease = selectedForLevel.length < requiredSelectionsForLevel
-                            return (
-                              <div key={`${level}-${activityName}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 8px', borderRadius: 8, background: activityCount > 0 ? '#f7f3ff' : '#fafafa' }}>
-                                <span style={{ fontSize: 12, color: '#333', fontWeight: 600, flex: 1 }}>{activityName}</span>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <button
-                                    type="button"
-                                    style={{ ...S.btn('#9ca3af'), padding: '2px 8px', fontSize: 12 }}
-                                    onClick={() => setActivityCount(level, activityName, activityCount - 1)}
-                                    disabled={activityCount <= 0}
-                                  >
-                                    -
-                                  </button>
-                                  <span style={{ minWidth: 20, textAlign: 'center', fontSize: 12, fontWeight: 700 }}>{activityCount}</span>
-                                  <button
-                                    type="button"
-                                    style={{ ...S.btn(COLORS.teal), padding: '2px 8px', fontSize: 12 }}
-                                    onClick={() => setActivityCount(level, activityName, activityCount + 1)}
-                                    disabled={!canIncrease}
-                                  >
-                                    +
-                                  </button>
-                                </div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
                     </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        )}
-        {shouldShowReadOnlyProductList && (
-          <div style={S.card}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.primary, marginBottom: 6 }}>16'lı Keşif Kutusu Ürün Listesi</div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 14 }}>Bu pakette seçim gerekmez; aşağıdaki ürünlerin tamamı otomatik dahil edilir.</div>
-            {activeLevels.length === 0 ? (
-              <div style={{ fontSize: 13, color: '#999' }}>Önce sınıf seviyelerine adet giriniz.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 10 }}>
-                {activeLevels.map(level => {
-                  const availableOptions = getActivityOptionsForLevel(level)
-                  return (
-                    <div key={level} style={{ border: '1px solid #ece6ff', borderRadius: 12, padding: 12, background: '#fff' }}>
-                      <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.primary, marginBottom: 10 }}>{level}</div>
-                      {availableOptions.length === 0 ? (
-                        <div style={{ fontSize: 12, color: '#999' }}>Bu seviye için etkinlik listesi bulunamadı.</div>
-                      ) : (
-                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
-                          {availableOptions.map(activityName => (
-                            <div key={`${level}-readonly-${activityName}`} style={{ fontSize: 12, color: '#333', fontWeight: 600, padding: '6px 8px', borderRadius: 8, background: '#fafafa' }}>{activityName}</div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+                    {overCapacity && (
+                      <div style={{ fontSize: 12, color: COLORS.orange, fontWeight: 700, marginBottom: 8 }}>
+                        Bu seviyede toplam {maxForLevel} etkinlik bulunuyor, {requiredSelectionsForLevel}'li paket seçilemez.
+                      </div>
+                    )}
+                    {blocks.length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#999' }}>Bu seviye için etkinlik listesi bulunamadı.</div>
+                    ) : !isFull && !canSelectActivities ? (
+                      <div style={{ fontSize: 12, color: '#999' }}>Bu seviyede ürün seçimine başlamadan önce paket tipi seçiniz.</div>
+                    ) : (
+                      <div style={{ display: 'grid', gap: 12 }}>
+                        {blocks.map(block => (
+                          <div key={`${level}-${block.term}`} style={{ border: '1px solid #f0ecff', borderRadius: 10, padding: 10, background: '#fcfbff' }}>
+                            <div style={{ fontSize: 12, fontWeight: 800, color: COLORS.teal, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                              {block.term}
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
+                              {block.activities.map(activityName => {
+                                if (isFull) {
+                                  return (
+                                    <div key={`${level}-readonly-${activityName}`} style={{ fontSize: 12, color: '#333', fontWeight: 600, padding: '6px 8px', borderRadius: 8, background: '#f7f3ff' }}>{activityName}</div>
+                                  )
+                                }
+                                const selected = isActivitySelected(level, activityName)
+                                const limitReached = selectedForLevel.length >= requiredSelectionsForLevel
+                                const disabled = !selected && limitReached
+                                return (
+                                  <label
+                                    key={`${level}-${activityName}`}
+                                    style={{
+                                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8,
+                                      background: selected ? '#f7f3ff' : '#fafafa',
+                                      border: selected ? `1px solid ${COLORS.primary}33` : '1px solid transparent',
+                                      cursor: disabled ? 'not-allowed' : 'pointer',
+                                      opacity: disabled ? 0.5 : 1,
+                                    }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      disabled={disabled}
+                                      onChange={() => toggleActivity(level, activityName)}
+                                      style={{ width: 16, height: 16, accentColor: COLORS.primary, cursor: disabled ? 'not-allowed' : 'pointer' }}
+                                    />
+                                    <span style={{ fontSize: 12, color: '#333', fontWeight: 600, flex: 1 }}>{activityName}</span>
+                                  </label>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
         {shouldShowStemSelection && (

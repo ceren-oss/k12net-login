@@ -67,6 +67,43 @@ const getPreOrderSubtotal = (preOrder) => (preOrder?.pre_order_items || []).redu
   (sum, item) => sum + ((parseInt(item?.qty, 10) || 0) * parseAmount(item?.unit_price)),
   0
 )
+// Her seviyede kaç etkinlik var (ARGE listesi).
+// 8. Sınıf'ta yalnızca 8 etkinlik olduğu için 8'den büyük paket seçilemez.
+const MAX_ACTIVITIES_BY_GRADE = {
+  '4 Yaş': 16, '5-6 Yaş': 16, '1. Sınıf': 16, '2. Sınıf': 16, '3. Sınıf': 16,
+  '4. Sınıf': 16, '5. Sınıf': 16, '6. Sınıf': 16, '7. Sınıf': 16, '8. Sınıf': 8,
+}
+const parsePackageSizeFromProductName = (name) => {
+  const match = String(name || '').match(/(\d+)\s*['\u2019]?\s*l(?:\u0131|i|u|\u00fc)/i)
+  if (!match) return null
+  const count = parseInt(match[1], 10)
+  return Number.isFinite(count) ? count : null
+}
+const normalizeGradeLabel = (value) => {
+  const raw = normalizeTrText(value)
+  if (!raw) return ''
+  const hit = Object.keys(MAX_ACTIVITIES_BY_GRADE).find(grade => {
+    const g = normalizeTrText(grade)
+    return raw === g || raw.startsWith(g) || raw.includes(g)
+  })
+  if (hit) return hit
+  const m = raw.match(/(\d+)\s*\.?\s*sinif/)
+  if (m) {
+    const candidate = `${parseInt(m[1], 10)}. Sınıf`
+    if (MAX_ACTIVITIES_BY_GRADE[candidate]) return candidate
+  }
+  if (raw.includes('5-6') || raw.includes('5 6')) return '5-6 Yaş'
+  if (raw.includes('4 yas') || raw.includes('4yas')) return '4 Yaş'
+  return ''
+}
+const buildCapacityViolationMessage = (violations = []) => {
+  if (!violations.length) return ''
+  const lines = violations.slice(0, 5).map(v =>
+    `• ${v.excelRow}. satır — ${v.grade}: "${v.productName}" (${v.packageSize}'li). Bu seviyede toplam ${v.capacity} etkinlik var.`
+  )
+  const extra = violations.length > 5 ? `\n• ve ${violations.length - 5} satır daha` : ''
+  return `Excel yüklenemedi. Sınıf seviyesine uygun olmayan paket seçimi var:\n\n${lines.join('\n')}${extra}\n\nLütfen Excel'i düzeltip tekrar yükleyin.`
+}
 const sanitizeForecastRows = (rows = []) => (rows || [])
   .map(row => ({
     grade: row?.grade || FORECAST_GRADES[0],
@@ -280,6 +317,9 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
 
   const productDemandMap = new Map()
   const gradeQtyMap = new Map()
+  const capacityViolations = []
+  // Her Excel satırının seviye ↔ ürün bağını koru (asıl kaynak buydu)
+  const gradeProductRows = []
   let sourceLineCount = 0
 
   for (let rowIndex = header.rowIndex + 1; rowIndex < rows.length; rowIndex++) {
@@ -297,6 +337,20 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
     if (header.totalIndex >= 0 && (rowTotalFromExcel || 0) <= 0) continue
 
     sourceLineCount += 1
+    // KAPASİTE KONTROLÜ: seviyenin etkinlik sayısından büyük paket kabul edilmez.
+    // Örn. 8. Sınıf'ta 8 etkinlik var; 8'den büyük paket (12'li, 16'lı) hatalıdır.
+    const gradeLabelForRow = normalizeGradeLabel(classCell)
+    const packageSizeForRow = parsePackageSizeFromProductName(productCell)
+    const capacityForRow = MAX_ACTIVITIES_BY_GRADE[gradeLabelForRow]
+    if (gradeLabelForRow && capacityForRow && packageSizeForRow && packageSizeForRow > capacityForRow) {
+      capacityViolations.push({
+        excelRow: rowIndex + 1,
+        grade: gradeLabelForRow,
+        productName: productCell,
+        packageSize: packageSizeForRow,
+        capacity: capacityForRow,
+      })
+    }
     const productKey = normalizeImportText(productCell) || `${productCell}-${rowIndex}`
     const currentProduct = productDemandMap.get(productKey) || { label: productCell, qty: 0, priceTotal: 0, priceQty: 0 }
     currentProduct.qty += qty
@@ -311,6 +365,14 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
       const previousQty = gradeQtyMap.get(mappedGrade) || 0
       if (previousQty === 0) gradeQtyMap.set(mappedGrade, qty)
       else if (previousQty !== qty) gradeQtyMap.set(mappedGrade, previousQty + qty)
+      // Seviye ↔ ürün eşleşmesini sakla
+      gradeProductRows.push({
+        grade: mappedGrade,
+        productLabel: productCell,
+        packageSize: packageSizeForRow,
+        qty,
+        unitPrice: unitPriceFromExcel,
+      })
     }
   }
 
@@ -353,10 +415,23 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
     .map(grade => ({ grade, qty: gradeQtyMap.get(grade) || 0 }))
     .filter(row => row.qty > 0)
     .map(row => ({ grade: row.grade, qty: String(row.qty) }))
+  // Seviye ↔ ürün satırlarını gerçek product_id'ye çöz
+  const gradeItems = gradeProductRows.flatMap(row => {
+    const matchedProduct = findProductByExcelName(row.productLabel, products)
+    if (!matchedProduct) return []
+    const resolvedUnitPrice = row.unitPrice > 0 ? row.unitPrice : parseAmount(getPrice(matchedProduct.id))
+    return [{
+      grade: row.grade,
+      product_id: String(matchedProduct.id),
+      qty: String(row.qty),
+      unit_price: Math.round((parseAmount(resolvedUnitPrice) || 0) * 100) / 100,
+      packageSize: row.packageSize,
+    }]
+  })
   const orderQtyTotal = items.reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
   const forecastQtyTotal = classForecastRows.reduce((sum, row) => sum + (parseInt(row.qty, 10) || 0), 0)
 
-  return { schoolName, address, items, classForecastRows, unresolvedProducts, sourceLineCount, orderQtyTotal, forecastQtyTotal }
+  return { schoolName, address, items, gradeItems, classForecastRows, unresolvedProducts, sourceLineCount, orderQtyTotal, forecastQtyTotal, capacityViolations }
 }
 
 export default function DealerPortal({ dealer, onLogout }) {
@@ -616,6 +691,8 @@ function Dashboard({ dealer, orders, payments, checks, preOrders, schoolForms, i
 function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, isMobile }) {
   const [schoolName, setSchoolName] = useState('')
   const [cariName, setCariName] = useState('')
+  // Excel'den gelen seviye ↔ ürün eşleşmesi (varsa kayıtta bu kullanılır)
+  const [importedGradeItems, setImportedGradeItems] = useState([])
   const [address, setAddress] = useState('')
   const [season, setSeason] = useState('2026-2027')
   const [note, setNote] = useState('')
@@ -691,6 +768,10 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
       const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { header: 1, raw: false, defval: '' })
       const parsed = parsePreOrderExcelRows(sheetRows, products, getPrice)
 
+      // Kapasite ihlali varsa YÜKLEME YAPMA (8. Sınıf'a 8'den fazla ürün engeli)
+      if (parsed.capacityViolations && parsed.capacityViolations.length > 0) {
+        throw new Error(buildCapacityViolationMessage(parsed.capacityViolations))
+      }
       if (parsed.unresolvedProducts.length > 0) {
         const visibleItems = parsed.unresolvedProducts.slice(0, 3).join(', ')
         const extraCount = parsed.unresolvedProducts.length > 3 ? ` +${parsed.unresolvedProducts.length - 3} ürün` : ''
@@ -704,6 +785,8 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
 
       setItems(parsed.items)
       setClassForecastRows(parsed.classForecastRows)
+      // Excel'den gelen seviye ↔ ürün eşleşmesini sakla (kayıtta kullanılacak)
+      setImportedGradeItems(parsed.gradeItems || [])
       if (parsed.schoolName) setSchoolName(parsed.schoolName)
       if (parsed.address) setAddress(parsed.address)
       setExcelImportSummary({
@@ -764,7 +847,11 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
           if (!firstSheetName) throw new Error('Excel içinde okunabilir sayfa bulunamadı.')
           const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { header: 1, raw: false, defval: '' })
           const parsed = parsePreOrderExcelRows(sheetRows, products, getPrice)
-          if (parsed.unresolvedProducts.length > 0) {
+          // Kapasite ihlali varsa YÜKLEME YAPMA (8. Sınıf'a 8'den fazla ürün engeli)
+      if (parsed.capacityViolations && parsed.capacityViolations.length > 0) {
+        throw new Error(buildCapacityViolationMessage(parsed.capacityViolations))
+      }
+      if (parsed.unresolvedProducts.length > 0) {
             const visibleItems = parsed.unresolvedProducts.slice(0, 3).join(', ')
             const extraCount = parsed.unresolvedProducts.length > 3 ? ` +${parsed.unresolvedProducts.length - 3} ürün` : ''
             throw new Error(`Eşleşmeyen ürünler: ${visibleItems}${extraCount}`)
@@ -797,7 +884,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         id: generatePreOrderId(idx),
         dealer_id: dealer.id,
         school_name: row.schoolName,
-        cari_adi: row.schoolName,
+        cari_adi: null, // cari adı okul formunda kurum tarafından girilir
         address: row.address,
         season,
         note: buildPreOrderNote(`Toplu Excel: ${row.fileName}`, row.classForecastRows),
@@ -805,9 +892,12 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
       }))
       const preOrderItemsPayload = preOrdersPayload.flatMap((preOrder, idx) => {
         const row = parsedRowsByFile[idx]
-        return row.items.map(item => ({
+        // Excel'de seviye ↔ ürün bağı varsa onu kaydet; yoksa eski davranışa dön.
+        // Bu bağ sayesinde okul formu her seviyenin kaçlı set aldığını bilir.
+        const sourceRows = (row.gradeItems && row.gradeItems.length > 0) ? row.gradeItems : row.items
+        return sourceRows.map(item => ({
           pre_order_id: preOrder.id,
-          grade: '-',
+          grade: item.grade || '-',
           branch: '-',
           teacher: '-',
           product_id: parseInt(item.product_id, 10),
@@ -847,8 +937,10 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
   }
 
   const save = async () => {
-    if (!schoolName || !cariName || filledItems.length === 0) {
-      alert('Kurum adı, cari adı ve en az bir ürün satırı zorunludur.')
+    // Cari adı burada zorunlu DEĞİL — kurumu ilgilendiren bir bilgi,
+    // okul formunda zorunlu olarak isteniyor. Bayi biliyorsa girebilir.
+    if (!schoolName || filledItems.length === 0) {
+      alert('Kurum adı ve en az bir ürün satırı zorunludur.')
       return
     }
     if (validForecastRows.length === 0) {
@@ -866,11 +958,19 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
     setLoading(true)
     const preOrderId = generatePreOrderId()
     const noteWithForecast = buildPreOrderNote(note, validForecastRows)
-    await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, cari_adi: cariName, address, season, note: noteWithForecast, status: 'on_siparis' }])
-    await supabase.from('pre_order_items').insert(filledItems.map(item => ({
-      pre_order_id: preOrderId, grade: '-', branch: '-', teacher: '-',
-      product_id: parseInt(item.product_id, 10), qty: parseInt(item.qty, 10), unit_price: parseAmount(item.unit_price),
-    })))
+    await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, cari_adi: String(cariName || '').trim() || null, address, season, note: noteWithForecast, status: 'on_siparis' }])
+    // Excel'den seviye ↔ ürün eşleşmesi geldiyse onu kullan; böylece okul formu
+    // her sınıf seviyesinin kaçlı set aldığını bilir ve seçimi ona göre kısıtlar.
+    const itemRowsToInsert = (importedGradeItems && importedGradeItems.length > 0)
+      ? importedGradeItems.map(item => ({
+        pre_order_id: preOrderId, grade: item.grade || '-', branch: '-', teacher: '-',
+        product_id: parseInt(item.product_id, 10), qty: parseInt(item.qty, 10), unit_price: parseAmount(item.unit_price),
+      }))
+      : filledItems.map(item => ({
+        pre_order_id: preOrderId, grade: '-', branch: '-', teacher: '-',
+        product_id: parseInt(item.product_id, 10), qty: parseInt(item.qty, 10), unit_price: parseAmount(item.unit_price),
+      }))
+    await supabase.from('pre_order_items').insert(itemRowsToInsert)
     setSubmitted(true)
     setSubmitFeedback({
       title: 'Ön Sipariş Alındı',
@@ -884,6 +984,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
     setNote('')
     setItems([{ product_id: '', qty: '', unit_price: 0 }])
     setClassForecastRows([{ grade: '1. Sınıf', qty: '' }])
+    setImportedGradeItems([])
     loadAll()
     setTimeout(() => setSubmitted(false), 3000)
   }
@@ -977,7 +1078,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginBottom: 16 }}>Kurum Bilgileri</div>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 14, marginBottom: 14 }}>
           <div><label style={S.label}>Kurum Adı *</label><input style={S.input} value={schoolName} onChange={e => setSchoolName(e.target.value)} placeholder="Okul / Kurum adı" /></div>
-          <div><label style={S.label}>Cari Adı *</label><input style={S.input} value={cariName} onChange={e => setCariName(e.target.value)} placeholder="Muhasebe cari adı" /></div>
+          <div><label style={S.label}>Cari Adı</label><input style={S.input} value={cariName} onChange={e => setCariName(e.target.value)} placeholder="Biliniyorsa giriniz (kurum formunda zorunlu)" /></div>
           <div><label style={S.label}>Sezon *</label><select style={S.select} value={season} onChange={e => setSeason(e.target.value)}><option>2025-2026</option><option>2026-2027</option></select></div>
         </div>
         <div><label style={S.label}>Adres</label><input style={S.input} value={address} onChange={e => setAddress(e.target.value)} placeholder="Kurum adresi" /></div>
@@ -1070,7 +1171,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
         <input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Not..." />
       </div>
       <div style={{ display: 'flex', justifyContent: isMobile ? 'stretch' : 'flex-end' }}>
-        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || !cariName || filledItems.length === 0 || validForecastRows.length === 0 || hasDuplicateProductSelection || isForecastQtyMismatch}>
+        <button style={{ ...S.btn(COLORS.primary), width: isMobile ? '100%' : 'auto' }} onClick={save} disabled={loading || !schoolName || filledItems.length === 0 || validForecastRows.length === 0 || hasDuplicateProductSelection || isForecastQtyMismatch}>
           {loading ? 'Gönderiliyor...' : 'Ön Sipariş Gönder'}
         </button>
       </div>
