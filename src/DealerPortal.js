@@ -108,6 +108,8 @@ const sanitizeForecastRows = (rows = []) => (rows || [])
   .map(row => ({
     grade: row?.grade || FORECAST_GRADES[0],
     qty: parseInt(row?.qty, 10) || 0,
+    // Seviyenin hangi seti aldığı bilgisi korunur
+    product_id: row?.product_id ? String(row.product_id) : '',
   }))
   .filter(row => row.grade && row.qty > 0)
 const splitPreOrderNote = (rawNote) => {
@@ -411,11 +413,7 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
       }
     })
     .sort((a, b) => parseInt(a.product_id, 10) - parseInt(b.product_id, 10))
-  const classForecastRows = FORECAST_GRADES
-    .map(grade => ({ grade, qty: gradeQtyMap.get(grade) || 0 }))
-    .filter(row => row.qty > 0)
-    .map(row => ({ grade: row.grade, qty: String(row.qty) }))
-  // Seviye ↔ ürün satırlarını gerçek product_id'ye çöz
+  // Seviye ↔ ürün satırlarını gerçek product_id'ye çöz (sınıf satırlarından ÖNCE)
   const gradeItems = gradeProductRows.flatMap(row => {
     const matchedProduct = findProductByExcelName(row.productLabel, products)
     if (!matchedProduct) return []
@@ -428,6 +426,19 @@ const parsePreOrderExcelRows = (rows = [], products = [], getPrice) => {
       packageSize: row.packageSize,
     }]
   })
+  // Excel'de seviye ↔ ürün bağı var; sınıf satırları set bilgisiyle birlikte dolar
+  const productIdByGrade = new Map()
+  for (const item of gradeItems) {
+    if (!productIdByGrade.has(item.grade)) productIdByGrade.set(item.grade, String(item.product_id))
+  }
+  const classForecastRows = FORECAST_GRADES
+    .map(grade => ({
+      grade,
+      qty: gradeQtyMap.get(grade) || 0,
+      product_id: productIdByGrade.get(grade) || '',
+    }))
+    .filter(row => row.qty > 0)
+    .map(row => ({ grade: row.grade, qty: String(row.qty), product_id: row.product_id }))
   const orderQtyTotal = items.reduce((sum, item) => sum + (parseInt(item.qty, 10) || 0), 0)
   const forecastQtyTotal = classForecastRows.reduce((sum, row) => sum + (parseInt(row.qty, 10) || 0), 0)
 
@@ -734,7 +745,24 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
 
   const addItem = () => setItems(prev => [...prev, { product_id: '', qty: '', unit_price: 0 }])
   const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx))
-  const addClassForecastRow = () => setClassForecastRows(prev => [...prev, { grade: FORECAST_GRADES[0], qty: '' }])
+  const addClassForecastRow = () => setClassForecastRows(prev => [...prev, { grade: FORECAST_GRADES[0], qty: '', product_id: '' }])
+  // Bir seviyede seçilebilecek setler: kapasitesini aşan paketler listelenmez
+  // (8. Sınıf'ta 8 etkinlik olduğu için 12'li / 16'lı gösterilmez)
+  const getSelectableProductsForGrade = (grade) => {
+    const capacity = MAX_ACTIVITIES_BY_GRADE[grade]
+    return (products || []).filter(product => {
+      const packageSize = parsePackageSizeFromProductName(product.name)
+      if (!packageSize) return true
+      if (!capacity) return true
+      return packageSize <= capacity
+    })
+  }
+  // Satırın paket boyutu
+  const getForecastRowPackageSize = (row) => {
+    if (!row?.product_id) return null
+    const product = (products || []).find(p => String(p.id) === String(row.product_id))
+    return product ? parsePackageSizeFromProductName(product.name) : null
+  }
   const removeClassForecastRow = (idx) => setClassForecastRows(prev => prev.filter((_, i) => i !== idx))
   const filledItems = items.filter(i => i.product_id && parseInt(i.qty, 10) > 0)
   const validForecastRows = sanitizeForecastRows(classForecastRows)
@@ -961,8 +989,23 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
     await supabase.from('pre_orders').insert([{ id: preOrderId, dealer_id: dealer.id, school_name: schoolName, cari_adi: String(cariName || '').trim() || null, address, season, note: noteWithForecast, status: 'on_siparis' }])
     // Excel'den seviye ↔ ürün eşleşmesi geldiyse onu kullan; böylece okul formu
     // her sınıf seviyesinin kaçlı set aldığını bilir ve seçimi ona göre kısıtlar.
-    const itemRowsToInsert = (importedGradeItems && importedGradeItems.length > 0)
-      ? importedGradeItems.map(item => ({
+    // Sınıf satırlarında set seçilmişse seviye ↔ ürün bağını oradan kur
+    const forecastGradeItems = validForecastRows
+      .filter(row => row.product_id)
+      .map(row => {
+        const product = (products || []).find(p => String(p.id) === String(row.product_id))
+        return {
+          grade: row.grade,
+          product_id: String(row.product_id),
+          qty: String(row.qty),
+          unit_price: parseAmount(getPrice(product?.id)),
+        }
+      })
+    const gradeLinkedItems = (importedGradeItems && importedGradeItems.length > 0)
+      ? importedGradeItems
+      : forecastGradeItems
+    const itemRowsToInsert = (gradeLinkedItems && gradeLinkedItems.length > 0)
+      ? gradeLinkedItems.map(item => ({
         pre_order_id: preOrderId, grade: item.grade || '-', branch: '-', teacher: '-',
         product_id: parseInt(item.product_id, 10), qty: parseInt(item.qty, 10), unit_price: parseAmount(item.unit_price),
       }))
@@ -1132,7 +1175,7 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
           <button style={{ ...S.btn(COLORS.teal), fontSize: 12, padding: '7px 14px' }} onClick={addClassForecastRow}>+ Sınıf Satırı</button>
         </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
-          <thead><tr><th style={S.th}>Sınıf</th><th style={S.th}>Adet</th><th style={{ ...S.th, width: 40 }}></th></tr></thead>
+          <thead><tr><th style={S.th}>Sınıf</th><th style={S.th}>Ürün / Set</th><th style={S.th}>Adet</th><th style={{ ...S.th, width: 40 }}></th></tr></thead>
           <tbody>{classForecastRows.map((row, idx) => (
             <tr key={`forecast-row-${idx}`}>
               <td style={S.td}>
@@ -1140,13 +1183,43 @@ function PreOrder({ dealer, products, getPrice, loadAll, isFlexiblePriceDealer, 
                   {FORECAST_GRADES.map(grade => <option key={grade} value={grade}>{grade}</option>)}
                 </select>
               </td>
+              {/* Hangi sınıfın kaçlı set aldığı burada seçilir/görünür */}
+              <td style={S.td}>
+                <select
+                  style={{ ...S.select, fontSize: 12 }}
+                  value={row.product_id || ''}
+                  onChange={e => updateClassForecast(idx, 'product_id', e.target.value)}
+                >
+                  <option value="">Set seçiniz</option>
+                  {getSelectableProductsForGrade(row.grade).map(product => (
+                    <option key={`fc-${idx}-${product.id}`} value={product.id}>{product.name}</option>
+                  ))}
+                </select>
+                {(() => {
+                  const packageSize = getForecastRowPackageSize(row)
+                  const capacity = MAX_ACTIVITIES_BY_GRADE[row.grade]
+                  if (!packageSize) return null
+                  return (
+                    <div style={{ marginTop: 4, display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: COLORS.primary, borderRadius: 999, padding: '2px 8px' }}>
+                        {packageSize}'li set
+                      </span>
+                      {capacity ? (
+                        <span style={{ fontSize: 10, color: packageSize > capacity ? COLORS.orange : '#8a86a0', fontWeight: 600 }}>
+                          {packageSize > capacity ? `⚠ bu seviyede en fazla ${capacity}` : `(max ${capacity} etkinlik)`}
+                        </span>
+                      ) : null}
+                    </div>
+                  )
+                })()}
+              </td>
               <td style={S.td}><input type="number" min="0" style={{ ...S.input, textAlign: 'center' }} value={row.qty} onChange={e => updateClassForecast(idx, 'qty', e.target.value)} /></td>
               <td style={S.td}>{idx > 0 && <button style={{ ...S.btn('#ef4444'), padding: '4px 8px', fontSize: 12 }} onClick={() => removeClassForecastRow(idx)}>✕</button>}</td>
             </tr>
           ))}</tbody>
           <tfoot>
             <tr style={{ background: '#f8f4ff' }}>
-              <td style={{ ...S.td, fontWeight: 700, textAlign: 'right' }}>Toplam</td>
+              <td colSpan={2} style={{ ...S.td, fontWeight: 700, textAlign: 'right' }}>Toplam</td>
               <td style={{ ...S.td, fontWeight: 700, color: forecastQtyTotal === orderQtyTotal ? COLORS.green : COLORS.orange }}>{forecastQtyTotal}</td>
               <td style={S.td}></td>
             </tr>

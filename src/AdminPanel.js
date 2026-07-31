@@ -48,6 +48,22 @@ const getOrderTotalWithCargo = (order) => parseMoney(order?.total) + getOrderCar
 // ---------------------- KDV ----------------------
 // KDV oranı sabit değildir, sipariş bazında elle girilebilir.
 const DEFAULT_KDV_RATE = 20
+// Hazır KDV seçenekleri. "1/3'e %20" bayi portalındaki kuralın karşılığıdır:
+// tutarın 1/3'üne %20 uygulanır → efektif oran %6,67
+const KDV_PRESETS = [
+  { key: 'ucteBir20', label: "1/3'e %20 (bayi kuralı)", rate: Math.round((20 / 3) * 1000000) / 1000000 },
+  { key: 'tam20', label: '%20 (tam)', rate: 20 },
+  { key: 'tam10', label: '%10', rate: 10 },
+  { key: 'tam1', label: '%1', rate: 1 },
+  { key: 'yok', label: 'KDV Yok (%0)', rate: 0 },
+]
+// Girilen orana karşılık gelen hazır seçeneği bul, yoksa 'elle'
+const matchKdvPreset = (rateRaw) => {
+  const rate = parseFloat(rateRaw)
+  if (!Number.isFinite(rate)) return 'elle'
+  const hit = KDV_PRESETS.find(preset => Math.abs(preset.rate - rate) < 0.0001)
+  return hit ? hit.key : 'elle'
+}
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100
 const getOrderKdvRate = (order) => {
   const raw = order?.kdv_orani
@@ -1166,7 +1182,8 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                       <div style={{ height: 1, background: '#eee', margin: '4px 0' }} />
                       <div style={{ fontSize: 11, color: '#666' }}>KDV Hariç: {fmt(breakdown.net)}</div>
                       <div style={{ fontSize: 11, color: COLORS.primary, fontWeight: 700 }}>
-                        KDV ({formatKdvRate(breakdown.rate)}): {fmt(breakdown.kdv)}
+                        KDV ({formatKdvRate(breakdown.rate)}
+                        {matchKdvPreset(breakdown.rate) === 'ucteBir20' ? " · 1/3'e %20" : ''}): {fmt(breakdown.kdv)}
                       </div>
                       <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>
                         {breakdown.included ? 'Tutarlar KDV dahil girildi' : 'KDV tutarlara eklendi'}
@@ -1214,8 +1231,33 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                 <div><label style={S.label}>Kargo Tutarı</label><input type="number" style={S.input} value={processForm.cargo_fee} onChange={e => setProcessForm(p => ({ ...p, cargo_fee: e.target.value }))} /></div>
                 <div><label style={S.label}>Ücretsiz Set Adedi</label><input type="number" style={S.input} value={processForm.free_qty} onChange={e => setProcessForm(p => ({ ...p, free_qty: e.target.value }))} /></div>
                 <div><label style={S.label}>Kutu Bedeli</label><input type="number" style={S.input} value={processForm.kutu_bedeli} onChange={e => setProcessForm(p => ({ ...p, kutu_bedeli: e.target.value }))} /></div>
-                <div><label style={S.label}>KDV Oranı (%)</label><input type="number" min="0" step="0.1" style={S.input} value={processForm.kdv_orani} onChange={e => setProcessForm(p => ({ ...p, kdv_orani: e.target.value }))} placeholder="20" /></div>
-                <div><label style={S.label}>KDV Durumu</label>
+                <div>
+                  <label style={S.label}>KDV Hesabı</label>
+                  <select
+                    style={S.select}
+                    value={matchKdvPreset(processForm.kdv_orani)}
+                    onChange={e => {
+                      const preset = KDV_PRESETS.find(p => p.key === e.target.value)
+                      if (preset) setProcessForm(p => ({ ...p, kdv_orani: String(preset.rate) }))
+                    }}
+                  >
+                    {KDV_PRESETS.map(preset => (
+                      <option key={preset.key} value={preset.key}>{preset.label}</option>
+                    ))}
+                    <option value="elle">Elle girildi</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>KDV Oranı — elle girilebilir</label>
+                  <input
+                    type="number" min="0" step="0.01" style={S.input}
+                    value={processForm.kdv_orani}
+                    onChange={e => setProcessForm(p => ({ ...p, kdv_orani: e.target.value }))}
+                    placeholder="20"
+                  />
+                </div>
+                <div>
+                  <label style={S.label}>KDV Durumu</label>
                   <select style={S.select} value={processForm.kdv_dahil ? 'dahil' : 'haric'} onChange={e => setProcessForm(p => ({ ...p, kdv_dahil: e.target.value === 'dahil' }))}>
                     <option value="haric">KDV Hariç (üzerine eklenir)</option>
                     <option value="dahil">KDV Dahil (tutarın içinde)</option>
@@ -1334,13 +1376,38 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
               <div><label style={S.label}>Ücretsiz Adet</label><input type="number" style={S.input} value={form.free_qty} onChange={e => setForm(p => ({ ...p, free_qty: e.target.value }))} /></div>
               <div><label style={S.label}>Kargo Tutarı</label><input type="number" style={S.input} value={form.cargo_fee} onChange={e => setForm(p => ({ ...p, cargo_fee: e.target.value }))} /></div>
               <div><label style={S.label}>Kutu Bedeli</label><input type="number" style={S.input} value={form.kutu_bedeli} onChange={e => setForm(p => ({ ...p, kutu_bedeli: e.target.value }))} /></div>
-              <div><label style={S.label}>KDV Oranı (%)</label><input type="number" min="0" step="0.1" style={S.input} value={form.kdv_orani} onChange={e => setForm(p => ({ ...p, kdv_orani: e.target.value }))} placeholder="20" /></div>
-              <div><label style={S.label}>KDV Durumu</label>
-                <select style={S.select} value={form.kdv_dahil ? 'dahil' : 'haric'} onChange={e => setForm(p => ({ ...p, kdv_dahil: e.target.value === 'dahil' }))}>
-                  <option value="haric">KDV Hariç (üzerine eklenir)</option>
-                  <option value="dahil">KDV Dahil (tutarın içinde)</option>
-                </select>
-              </div>
+                <div>
+                  <label style={S.label}>KDV Hesabı</label>
+                  <select
+                    style={S.select}
+                    value={matchKdvPreset(form.kdv_orani)}
+                    onChange={e => {
+                      const preset = KDV_PRESETS.find(p => p.key === e.target.value)
+                      if (preset) setForm(p => ({ ...p, kdv_orani: String(preset.rate) }))
+                    }}
+                  >
+                    {KDV_PRESETS.map(preset => (
+                      <option key={preset.key} value={preset.key}>{preset.label}</option>
+                    ))}
+                    <option value="elle">Elle girildi</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>KDV Oranı — elle girilebilir</label>
+                  <input
+                    type="number" min="0" step="0.01" style={S.input}
+                    value={form.kdv_orani}
+                    onChange={e => setForm(p => ({ ...p, kdv_orani: e.target.value }))}
+                    placeholder="20"
+                  />
+                </div>
+                <div>
+                  <label style={S.label}>KDV Durumu</label>
+                  <select style={S.select} value={form.kdv_dahil ? 'dahil' : 'haric'} onChange={e => setForm(p => ({ ...p, kdv_dahil: e.target.value === 'dahil' }))}>
+                    <option value="haric">KDV Hariç (üzerine eklenir)</option>
+                    <option value="dahil">KDV Dahil (tutarın içinde)</option>
+                  </select>
+                </div>
               <div><label style={S.label}>Sevk Tarihi</label><input type="date" style={S.input} value={form.cargo_date} onChange={e => setForm(p => ({ ...p, cargo_date: e.target.value }))} /></div>
               <div><label style={S.label}>Fatura</label><select style={S.select} value={form.invoice_status} onChange={e => setForm(p => ({ ...p, invoice_status: e.target.value }))}><option value="kesilmedi">Kesilmedi</option><option value="kesildi">Kesildi</option></select></div>
             </div>
