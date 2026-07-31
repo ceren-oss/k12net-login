@@ -866,17 +866,82 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
   }
 
   const convertToOrder = async (po) => {
+    if (!po?.id) return
+    if (po.status === 'siparise_donustu') {
+      alert('Bu ön sipariş zaten siparişe dönüştürülmüş.')
+      return
+    }
+
+    const { data: latestPo, error: latestPoError } = await supabase
+      .from('pre_orders')
+      .select('id, status')
+      .eq('id', po.id)
+      .maybeSingle()
+
+    if (latestPoError) {
+      alert('Ön sipariş durumu kontrol edilemedi: ' + (latestPoError.message || 'Bilinmeyen hata'))
+      return
+    }
+    if (!latestPo) {
+      alert('Ön sipariş bulunamadı.')
+      return
+    }
+    if (latestPo.status === 'siparise_donustu') {
+      alert('Bu ön sipariş zaten siparişe dönüştürülmüş.')
+      loadAll()
+      return
+    }
+    if (latestPo.status !== 'onaylandi') {
+      alert('Sadece onaylanmış ön siparişler siparişe dönüştürülebilir.')
+      loadAll()
+      return
+    }
+
     const items = po.pre_order_items || []
     const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
     const cargoFee = getPreOrderAutoCargoFee(po)
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, kutu_bedeli: 0, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', onaylanan_siparis: true, note: po.note, status: 'beklemede' }])
-    for (const item of items) {
-      await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
+
+    const { error: orderError } = await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, kutu_bedeli: 0, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', onaylanan_siparis: true, note: po.note, status: 'beklemede' }])
+    if (orderError) {
+      alert('Sipariş oluşturulamadı: ' + (orderError.message || 'Bilinmeyen hata'))
+      return
     }
+
+    for (const item of items) {
+      const { error: itemError } = await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
+      if (itemError) {
+        alert('Sipariş kalemi yazılamadı: ' + (itemError.message || 'Bilinmeyen hata'))
+        return
+      }
+    }
+
     const dealer = dealers.find(d => d.id === po.dealer_id)
-    await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', po.dealer_id)
-    await supabase.from('pre_orders').update({ status: 'siparise_donustu', cargo_fee: cargoFee }).eq('id', po.id)
+    const { error: balanceError } = await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', po.dealer_id)
+    if (balanceError) {
+      alert('Bayi bakiyesi güncellenemedi: ' + (balanceError.message || 'Bilinmeyen hata'))
+      return
+    }
+
+    // pre_orders tablosunda cargo_fee kolonu yok; sadece status güncelle
+    const { data: updatedPo, error: statusError } = await supabase
+      .from('pre_orders')
+      .update({ status: 'siparise_donustu' })
+      .eq('id', po.id)
+      .neq('status', 'siparise_donustu')
+      .select('id, status')
+      .maybeSingle()
+
+    if (statusError) {
+      alert('Ön sipariş durumu güncellenemedi: ' + (statusError.message || 'Bilinmeyen hata'))
+      return
+    }
+    if (!updatedPo) {
+      alert('Ön sipariş durumu güncellenemedi (muhtemel çift dönüşüm). Liste yenileniyor.')
+      loadAll()
+      return
+    }
+
     await logAdminAction('preorder_converted_to_order', `preorder:${po.id}`, {
       order_id: orderId,
       dealer_id: po.dealer_id,
