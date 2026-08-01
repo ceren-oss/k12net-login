@@ -856,6 +856,10 @@ function Dealers({ dealers, products, loadAll, logAdminAction, isSuperUser, isMo
 
 function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAdminAction, isMobile }) {
   const [detail, setDetail] = useState(null)
+  // Dönüşüm kilidi: aynı ön siparişe çift tıklamayı engeller
+  const convertingRef = useRef(new Set())
+  const [convertingIds, setConvertingIds] = useState([])
+  const isConverting = (id) => convertingIds.includes(id)
   const detailNoteData = splitPreOrderNote(detail?.note)
   const detailForecastRows = detailNoteData.forecastRows
   const detailSubtotal = (detail?.pre_order_items || []).reduce((sum, item) => sum + ((item.qty || 0) * (item.unit_price || 0)), 0)
@@ -1150,11 +1154,6 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
 
 function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAction, isMobile }) {
   const [modal, setModal] = useState(false)
-  // Liste görünümünde tutarlar KDV dahil mi hariç mi gösterilsin
-  // Dönüşüm kilidi: aynı ön siparişe çift tıklamayı engeller
-  const convertingRef = useRef(new Set())
-  const [convertingIds, setConvertingIds] = useState([])
-  const isConverting = (id) => convertingIds.includes(id)
   // Tutar gösterimi: KDV Dahil / KDV Hariç
   const [kdvViewMode, setKdvViewMode] = useState('dahil') // 'dahil' | 'haric'
   const [processModal, setProcessModal] = useState(false)
