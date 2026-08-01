@@ -558,16 +558,14 @@ export default function DealerPortal({ dealer, onLogout }) {
     } catch {}
   }
   const deletePreOrder = async (po) => {
-    if (po.status !== 'on_siparis') {
-      alert('Sadece kesinleşmemiş ön siparişler silinebilir.')
+    // Siparişe dönüşmüş kayıtlar silinemez — gerçek sipariş ve bakiye hareketi var.
+    // Bunun dışındaki tüm durumlar (test kayıtları, form doldurulmuş, onaylanmış)
+    // silinebilir; onay penceresi çağıran tarafta gösteriliyor.
+    if (po.status === 'siparise_donustu') {
+      alert('Siparişe dönüştürülmüş ön siparişler silinemez.')
       return false
     }
     const linkedForm = schoolForms.find(sf => sf.pre_order_id === po.id)
-    if (linkedForm && linkedForm.status !== 'bekliyor') {
-      alert('Okul formu doldurulmuş veya onaylanmış sipariş silinemez.')
-      return false
-    }
-    if (!window.confirm(`${po.school_name} için ön sipariş silinsin mi?`)) return false
     if (linkedForm) {
       await supabase.from('school_form_items').delete().eq('form_id', linkedForm.id)
       await supabase.from('school_forms').delete().eq('id', linkedForm.id)
@@ -1466,6 +1464,13 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
     }
   }
   const handleDelete = async (po) => {
+    const statusLabel = STATUS[po.status]?.label || po.status || '-'
+    const onay = window.confirm(
+      `Bu ön sipariş silinecek:\n\n` +
+      `${po.id}\n${po.school_name}\nDurum: ${statusLabel}\n\n` +
+      `Varsa okul formu da silinecek. Bu işlem geri alınamaz.\n\nDevam edilsin mi?`
+    )
+    if (!onay) return
     const deleted = await deletePreOrder(po)
     if (deleted && detail?.id === po.id) setDetail(null)
   }
@@ -1541,6 +1546,9 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
             const totalWithVat = getAmountWithVat(total)
             const sf = schoolForms.find(form => form.pre_order_id === po.id)
             const isEditable = po.status === 'on_siparis'
+            // Siparişe dönüşmüş kayıtlar silinemez (gerçek sipariş oluşmuş durumda).
+            // Diğer tüm durumlar (test kayıtları, onaylanmamışlar) silinebilir.
+            const isDeletable = po.status !== 'siparise_donustu'
             const canApprove = po.status === 'form_kaydedildi' || po.status === 'kesinlesti'
             const canManageForm = po.status === 'on_siparis' || po.status === 'kesinlesti'
             const cargoFee = getPreOrderCargoFee(po)
@@ -1575,10 +1583,10 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                       </button>
                     )}
                     {isEditable && (
-                      <>
-                        <button style={{ ...S.btn('#4f46e5'), fontSize: 11, padding: '5px 10px' }} onClick={() => openEdit(po)}>Düzenle</button>
-                        <button style={{ ...S.btn('#ef4444'), fontSize: 11, padding: '5px 10px' }} onClick={() => handleDelete(po)}>Sil</button>
-                      </>
+                      <button style={{ ...S.btn('#4f46e5'), fontSize: 11, padding: '5px 10px' }} onClick={() => openEdit(po)}>Düzenle</button>
+                    )}
+                    {isDeletable && (
+                      <button style={{ ...S.btn('#ef4444'), fontSize: 11, padding: '5px 10px' }} onClick={() => handleDelete(po)}>Sil</button>
                     )}
                     {!isEditable && po.status === 'kesinlesti' && (
                       <span style={{ ...S.badge('#6b7280'), alignSelf: 'center' }}>Düzenleme Kilitli</span>

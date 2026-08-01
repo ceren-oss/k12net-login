@@ -51,6 +51,7 @@ const DEFAULT_KDV_RATE = 20
 // Hazır KDV seçenekleri. "1/3'e %20" bayi portalındaki kuralın karşılığıdır:
 // tutarın 1/3'üne %20 uygulanır → efektif oran %6,67
 const KDV_PRESETS = [
+  { key: 'uygulanmasin', label: 'KDV uygulanmasın', rate: '' },
   { key: 'ucteBir20', label: "1/3'e %20 (bayi kuralı)", rate: Math.round((20 / 3) * 1000000) / 1000000 },
   { key: 'tam20', label: '%20 (tam)', rate: 20 },
   { key: 'tam10', label: '%10', rate: 10 },
@@ -59,17 +60,24 @@ const KDV_PRESETS = [
 ]
 // Girilen orana karşılık gelen hazır seçeneği bul, yoksa 'elle'
 const matchKdvPreset = (rateRaw) => {
+  if (rateRaw === '' || rateRaw === null || rateRaw === undefined) return 'uygulanmasin'
   const rate = parseFloat(rateRaw)
   if (!Number.isFinite(rate)) return 'elle'
   const hit = KDV_PRESETS.find(preset => Math.abs(preset.rate - rate) < 0.0001)
   return hit ? hit.key : 'elle'
 }
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100
-const getOrderKdvRate = (order) => {
+// Siparişte KDV oranı tanımlı mı? (null/boş = tanımsız, KDV uygulanmaz)
+const hasOrderKdv = (order) => {
   const raw = order?.kdv_orani
-  if (raw === null || raw === undefined || raw === '') return DEFAULT_KDV_RATE
+  if (raw === null || raw === undefined || raw === '') return false
   const parsed = parseFloat(raw)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_KDV_RATE
+  return Number.isFinite(parsed) && parsed > 0
+}
+// Tanımlıysa oranı, değilse null döner
+const getOrderKdvRate = (order) => {
+  if (!hasOrderKdv(order)) return null
+  return parseFloat(order.kdv_orani)
 }
 // kdv_dahil = true  → girilen tutarların İÇİNDE KDV var
 // kdv_dahil = false → girilen tutarlar KDV HARİÇ, üzerine eklenir
@@ -78,19 +86,23 @@ const isOrderKdvIncluded = (order) => Boolean(order?.kdv_dahil)
 const getOrderAmountBreakdown = (order) => {
   const gross = getOrderTotalWithCargo(order)
   const rate = getOrderKdvRate(order)
+  // KDV oranı girilmemiş → tutar aynen kalır, KDV eklenmez
+  if (rate === null) {
+    return { net: round2(gross), kdv: 0, gross: round2(gross), rate: null, included: false, tanimsiz: true }
+  }
   const factor = 1 + (rate / 100)
   if (isOrderKdvIncluded(order)) {
     // Tutarlar KDV dahil girilmiş → net'i geri hesapla
     const net = factor > 0 ? gross / factor : gross
-    return { net: round2(net), kdv: round2(gross - net), gross: round2(gross), rate, included: true }
+    return { net: round2(net), kdv: round2(gross - net), gross: round2(gross), rate, included: true, tanimsiz: false }
   }
   // Tutarlar KDV hariç girilmiş → KDV'yi üzerine ekle
   const kdv = gross * (rate / 100)
-  return { net: round2(gross), kdv: round2(kdv), gross: round2(gross + kdv), rate, included: false }
+  return { net: round2(gross), kdv: round2(kdv), gross: round2(gross + kdv), rate, included: false, tanimsiz: false }
 }
 // Ekranlarda gösterilecek KDV'li toplam
 const getOrderTotalWithKdv = (order) => getOrderAmountBreakdown(order).gross
-const formatKdvRate = (rate) => `%${String(rate).replace('.', ',')}`
+const formatKdvRate = (rate) => (rate === null || rate === undefined) ? '—' : `%${String(rate).replace('.', ',')}`
 const escapeCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
 const downloadCsvReport = (filename, headers, rows) => {
   const csvText = [headers, ...rows]
@@ -865,91 +877,122 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
     alert('Ön sipariş onaylandı.')
   }
 
-  const convertToOrder = async (po) => {
+  // Test/onaylanmamış ön siparişleri silme (siparişe dönüşenler hariç)
+  const deletePreOrderAdmin = async (po) => {
     if (!po?.id) return
     if (po.status === 'siparise_donustu') {
-      alert('Bu ön sipariş zaten siparişe dönüştürülmüş.')
+      alert('Siparişe dönüştürülmüş ön siparişler silinemez.')
       return
+    }
+    const statusLabel = STATUS[po.status]?.label || po.status || '-'
+    const onay = window.confirm(
+      `Bu ön sipariş silinecek:\n\n${po.id}\n${po.school_name}\nDurum: ${statusLabel}\n\n` +
+      `Varsa okul formu da silinecek. Bu işlem geri alınamaz.\n\nDevam edilsin mi?`
+    )
+    if (!onay) return
+
+    const { data: forms } = await supabase.from('school_forms').select('id').eq('pre_order_id', po.id)
+    for (const form of forms || []) {
+      await supabase.from('school_form_items').delete().eq('form_id', form.id)
+      await supabase.from('school_forms').delete().eq('id', form.id)
+    }
+    await supabase.from('pre_order_items').delete().eq('pre_order_id', po.id)
+    const { error } = await supabase.from('pre_orders').delete().eq('id', po.id)
+    if (error) {
+      alert('Ön sipariş silinemedi: ' + (error.message || 'Bilinmeyen hata'))
+      return
+    }
+    await logAdminAction('preorder_deleted', `preorder:${po.id}`, {
+      school_name: po.school_name,
+      status: po.status,
+    })
+    setDetail(null)
+    loadAll()
+  }
+
+  const convertToOrder = async (po) => {
+    if (!po?.id) return
+    // UI kilidi: aynı ön sipariş için ikinci tık hiç işleme girmesin
+    if (convertingRef.current.has(po.id)) return
+    convertingRef.current.add(po.id)
+    setConvertingIds(prev => [...prev, po.id])
+    const releaseLock = () => {
+      convertingRef.current.delete(po.id)
+      setConvertingIds(prev => prev.filter(id => id !== po.id))
     }
 
-    const { data: latestPo, error: latestPoError } = await supabase
-      .from('pre_orders')
-      .select('id, status')
-      .eq('id', po.id)
-      .maybeSingle()
+    try {
+      // ---- ADIM 1: ÖN SİPARİŞİ ATOMİK OLARAK KAP ----
+      // Statü güncellemesi EN BAŞTA yapılır. Koşul: status='onaylandi'.
+      // İki eşzamanlı tıktan yalnızca biri bu koşulu yakalayabilir,
+      // ikincisi boş döner ve hiç sipariş oluşturmaz.
+      const { data: claimedPo, error: claimError } = await supabase
+        .from('pre_orders')
+        .update({ status: 'siparise_donustu' })
+        .eq('id', po.id)
+        .eq('status', 'onaylandi')
+        .select('id, status')
+        .maybeSingle()
 
-    if (latestPoError) {
-      alert('Ön sipariş durumu kontrol edilemedi: ' + (latestPoError.message || 'Bilinmeyen hata'))
-      return
-    }
-    if (!latestPo) {
-      alert('Ön sipariş bulunamadı.')
-      return
-    }
-    if (latestPo.status === 'siparise_donustu') {
-      alert('Bu ön sipariş zaten siparişe dönüştürülmüş.')
-      loadAll()
-      return
-    }
-    if (latestPo.status !== 'onaylandi') {
-      alert('Sadece onaylanmış ön siparişler siparişe dönüştürülebilir.')
-      loadAll()
-      return
-    }
-
-    const items = po.pre_order_items || []
-    const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
-    const cargoFee = getPreOrderAutoCargoFee(po)
-    const orderId = 'SIP-' + Date.now().toString().slice(-6)
-
-    const { error: orderError } = await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, kutu_bedeli: 0, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', onaylanan_siparis: true, note: po.note, status: 'beklemede' }])
-    if (orderError) {
-      alert('Sipariş oluşturulamadı: ' + (orderError.message || 'Bilinmeyen hata'))
-      return
-    }
-
-    for (const item of items) {
-      const { error: itemError } = await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
-      if (itemError) {
-        alert('Sipariş kalemi yazılamadı: ' + (itemError.message || 'Bilinmeyen hata'))
+      if (claimError) {
+        alert('Ön sipariş durumu güncellenemedi: ' + (claimError.message || 'Bilinmeyen hata'))
         return
       }
-    }
+      if (!claimedPo) {
+        // Ya zaten dönüştürülmüş ya da onaylı değil
+        alert('Bu ön sipariş dönüştürülemedi. Zaten siparişe dönüştürülmüş veya onaylı değil.')
+        loadAll()
+        return
+      }
 
-    const dealer = dealers.find(d => d.id === po.dealer_id)
-    const { error: balanceError } = await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', po.dealer_id)
-    if (balanceError) {
-      alert('Bayi bakiyesi güncellenemedi: ' + (balanceError.message || 'Bilinmeyen hata'))
-      return
-    }
+      // Bu noktadan sonra hata olursa statüyü geri al
+      const rollbackStatus = async () => {
+        await supabase.from('pre_orders').update({ status: 'onaylandi' }).eq('id', po.id)
+        loadAll()
+      }
 
-    // pre_orders tablosunda cargo_fee kolonu yok; sadece status güncelle
-    const { data: updatedPo, error: statusError } = await supabase
-      .from('pre_orders')
-      .update({ status: 'siparise_donustu' })
-      .eq('id', po.id)
-      .neq('status', 'siparise_donustu')
-      .select('id, status')
-      .maybeSingle()
+      const items = po.pre_order_items || []
+      const total = items.reduce((s, i) => s + ((i.qty || 0) * (i.unit_price || 0)), 0)
+      const cargoFee = getPreOrderAutoCargoFee(po)
+      // Çakışmayı önlemek için zaman + rastgele bileşen
+      const orderId = 'SIP-' + Date.now().toString().slice(-6) + Math.floor(Math.random() * 90 + 10)
 
-    if (statusError) {
-      alert('Ön sipariş durumu güncellenemedi: ' + (statusError.message || 'Bilinmeyen hata'))
-      return
-    }
-    if (!updatedPo) {
-      alert('Ön sipariş durumu güncellenemedi (muhtemel çift dönüşüm). Liste yenileniyor.')
+      // ---- ADIM 2: SİPARİŞ ----
+      const { error: orderError } = await supabase.from('orders').insert([{ id: orderId, dealer_id: po.dealer_id, school_name: po.school_name, season: po.season, total, cargo_fee: cargoFee, kutu_bedeli: 0, invoice_status: 'kesilmedi', dia_status: false, cargo_status: 'faturalanmadi', onaylanan_siparis: true, note: po.note, status: 'beklemede' }])
+      if (orderError) {
+        alert('Sipariş oluşturulamadı: ' + (orderError.message || 'Bilinmeyen hata'))
+        await rollbackStatus()
+        return
+      }
+
+      // ---- ADIM 3: KALEMLER ----
+      for (const item of items) {
+        const { error: itemError } = await supabase.from('order_items').insert([{ order_id: orderId, product_id: item.product_id, qty: item.qty, unit_price: item.unit_price, free_qty: 0 }])
+        if (itemError) {
+          alert('Sipariş kalemi yazılamadı: ' + (itemError.message || 'Bilinmeyen hata'))
+          return
+        }
+      }
+
+      // ---- ADIM 4: BAKİYE ----
+      const dealer = dealers.find(d => d.id === po.dealer_id)
+      const { error: balanceError } = await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', po.dealer_id)
+      if (balanceError) {
+        alert('Sipariş oluşturuldu ancak bayi bakiyesi güncellenemedi: ' + (balanceError.message || 'Bilinmeyen hata'))
+      }
+
+      await logAdminAction('preorder_converted_to_order', `preorder:${po.id}`, {
+        order_id: orderId,
+        dealer_id: po.dealer_id,
+        school_name: po.school_name,
+        total,
+        cargo_fee: cargoFee,
+      })
+      setDetail(null)
       loadAll()
-      return
+    } finally {
+      releaseLock()
     }
-
-    await logAdminAction('preorder_converted_to_order', `preorder:${po.id}`, {
-      order_id: orderId,
-      dealer_id: po.dealer_id,
-      school_name: po.school_name,
-      total,
-      cargo_fee: cargoFee,
-    })
-    setDetail(null); loadAll()
     alert('Sipariş oluşturuldu: ' + orderId)
   }
 
@@ -992,7 +1035,18 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button style={{ ...S.btn(COLORS.teal), fontSize: 11, padding: '5px 10px' }} onClick={() => setDetail(po)}>Detay</button>
                     {(po.status === 'form_kaydedildi' || po.status === 'kesinlesti') && <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => approvePreOrder(po)}>Siparişi Onaylıyorum</button>}
-                    {po.status === 'onaylandi' && <button style={{ ...S.btn(COLORS.green), fontSize: 11, padding: '5px 10px' }} onClick={() => convertToOrder(po)}>Siparişe Dönüştür</button>}
+                    {po.status === 'onaylandi' && (
+                      <button
+                        style={{ ...S.btn(isConverting(po.id) ? '#9ca3af' : COLORS.green), fontSize: 11, padding: '5px 10px', cursor: isConverting(po.id) ? 'not-allowed' : 'pointer' }}
+                        onClick={() => convertToOrder(po)}
+                        disabled={isConverting(po.id)}
+                      >
+                        {isConverting(po.id) ? 'Dönüştürülüyor…' : 'Siparişe Dönüştür'}
+                      </button>
+                    )}
+                    {po.status !== 'siparise_donustu' && (
+                      <button style={{ ...S.btn('#ef4444'), fontSize: 11, padding: '5px 10px' }} onClick={() => deletePreOrderAdmin(po)}>Sil</button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -1073,7 +1127,13 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
             )}
             {detail.status === 'onaylandi' && (
               <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end', marginTop: 16 }}>
-                <button style={S.btn(COLORS.green)} onClick={() => convertToOrder(detail)}>Siparişe Dönüştür</button>
+                <button
+                  style={{ ...S.btn(isConverting(detail?.id) ? '#9ca3af' : COLORS.green), cursor: isConverting(detail?.id) ? 'not-allowed' : 'pointer' }}
+                  onClick={() => convertToOrder(detail)}
+                  disabled={isConverting(detail?.id)}
+                >
+                  {isConverting(detail?.id) ? 'Dönüştürülüyor…' : 'Siparişe Dönüştür'}
+                </button>
               </div>
             )}
             {(detail.status === 'form_kaydedildi' || detail.status === 'kesinlesti') && (
@@ -1091,13 +1151,18 @@ function PreOrders({ preOrders, dealers, products, loadAll, getDealerName, logAd
 function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAction, isMobile }) {
   const [modal, setModal] = useState(false)
   // Liste görünümünde tutarlar KDV dahil mi hariç mi gösterilsin
+  // Dönüşüm kilidi: aynı ön siparişe çift tıklamayı engeller
+  const convertingRef = useRef(new Set())
+  const [convertingIds, setConvertingIds] = useState([])
+  const isConverting = (id) => convertingIds.includes(id)
+  // Tutar gösterimi: KDV Dahil / KDV Hariç
   const [kdvViewMode, setKdvViewMode] = useState('dahil') // 'dahil' | 'haric'
   const [processModal, setProcessModal] = useState(false)
   const [processSaving, setProcessSaving] = useState(false)
   const [selectedOrder, setSelectedOrder] = useState(null)
   const [classItems, setClassItems] = useState([{ grade: '1. Sınıf', branch: '', teacher: '', qty: '' }])
-  const [processForm, setProcessForm] = useState({ cargo_date: '', cargo_fee: '', kutu_bedeli: '', free_qty: 0, kdv_orani: String(DEFAULT_KDV_RATE), kdv_dahil: false, dia_cari_kodu: '', dia_fatura_no: '', dia_status: false, invoice_status: 'kesilmedi', cargo_status: 'faturalanmadi' })
-  const [form, setForm] = useState({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', kdv_orani: String(DEFAULT_KDV_RATE), kdv_dahil: false, cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
+  const [processForm, setProcessForm] = useState({ cargo_date: '', cargo_fee: '', kutu_bedeli: '', free_qty: 0, kdv_orani: '', kdv_dahil: false, dia_cari_kodu: '', dia_fatura_no: '', dia_status: false, invoice_status: 'kesilmedi', cargo_status: 'faturalanmadi' })
+  const [form, setForm] = useState({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', kdv_orani: '', kdv_dahil: false, cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
 
   const total = (parseInt(form.qty) || 0) * (parseFloat(form.unit_price) || 0)
 
@@ -1108,7 +1173,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       cargo_fee: order.cargo_fee || '',
       kutu_bedeli: order.kutu_bedeli || '',
       free_qty: order.free_qty || 0,
-      kdv_orani: String(getOrderKdvRate(order)),
+      kdv_orani: hasOrderKdv(order) ? String(getOrderKdvRate(order)) : '',
       kdv_dahil: isOrderKdvIncluded(order),
       dia_cari_kodu: order.dia_cari_kodu || '',
       dia_fatura_no: order.dia_fatura_no || '',
@@ -1142,7 +1207,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       cargo_fee: parseFloat(processForm.cargo_fee) || 0,
       kutu_bedeli: parseFloat(processForm.kutu_bedeli) || 0,
       free_qty: parseInt(processForm.free_qty) || 0,
-      kdv_orani: parseFloat(processForm.kdv_orani) >= 0 ? parseFloat(processForm.kdv_orani) : DEFAULT_KDV_RATE,
+      kdv_orani: String(processForm.kdv_orani || '').trim() === '' ? null : (parseFloat(processForm.kdv_orani) >= 0 ? parseFloat(processForm.kdv_orani) : null),
       kdv_dahil: Boolean(processForm.kdv_dahil),
       dia_cari_kodu: processForm.dia_cari_kodu,
       dia_fatura_no: processForm.dia_fatura_no,
@@ -1176,7 +1241,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
   const save = async () => {
     if (!form.dealer_id || !form.product_id || !form.qty) return
     const orderId = 'SIP-' + Date.now().toString().slice(-6)
-    await supabase.from('orders').insert([{ id: orderId, dealer_id: form.dealer_id, school_name: form.school_name, season: form.season, total, cargo_fee: parseFloat(form.cargo_fee) || 0, kutu_bedeli: parseFloat(form.kutu_bedeli) || 0, kdv_orani: parseFloat(form.kdv_orani) >= 0 ? parseFloat(form.kdv_orani) : DEFAULT_KDV_RATE, kdv_dahil: Boolean(form.kdv_dahil), cargo_date: form.cargo_date || null, cargo_status: 'faturalanmadi', invoice_status: form.invoice_status, dia_status: form.dia_status, note: form.note, status: 'beklemede' }])
+    await supabase.from('orders').insert([{ id: orderId, dealer_id: form.dealer_id, school_name: form.school_name, season: form.season, total, cargo_fee: parseFloat(form.cargo_fee) || 0, kutu_bedeli: parseFloat(form.kutu_bedeli) || 0, kdv_orani: String(form.kdv_orani || '').trim() === '' ? null : (parseFloat(form.kdv_orani) >= 0 ? parseFloat(form.kdv_orani) : null), kdv_dahil: Boolean(form.kdv_dahil), cargo_date: form.cargo_date || null, cargo_status: 'faturalanmadi', invoice_status: form.invoice_status, dia_status: form.dia_status, note: form.note, status: 'beklemede' }])
     await supabase.from('order_items').insert([{ order_id: orderId, product_id: parseInt(form.product_id), qty: parseInt(form.qty), unit_price: parseFloat(form.unit_price), free_qty: parseInt(form.free_qty) || 0 }])
     const dealer = dealers.find(d => d.id === form.dealer_id)
     await supabase.from('dealers').update({ balance: (dealer?.balance || 0) - total }).eq('id', form.dealer_id)
@@ -1187,7 +1252,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
       total,
     })
     setModal(false)
-    setForm({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', kdv_orani: String(DEFAULT_KDV_RATE), kdv_dahil: false, cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
+    setForm({ dealer_id: '', school_name: '', season: '2026-2027', product_id: '', qty: '', unit_price: '', free_qty: 0, cargo_fee: '', kutu_bedeli: '', kdv_orani: '', kdv_dahil: false, cargo_date: '', invoice_status: 'kesilmedi', dia_status: false, note: '' })
     loadAll()
   }
 
@@ -1245,14 +1310,22 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                       <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(getOrderCargoFee(o))}</div>
                       <div style={{ fontSize: 11, color: '#666' }}>Kutu Bedeli: {fmt(getOrderBoxFee(o))}</div>
                       <div style={{ height: 1, background: '#eee', margin: '4px 0' }} />
-                      <div style={{ fontSize: 11, color: '#666' }}>KDV Hariç: {fmt(breakdown.net)}</div>
-                      <div style={{ fontSize: 11, color: COLORS.primary, fontWeight: 700 }}>
-                        KDV ({formatKdvRate(breakdown.rate)}
-                        {matchKdvPreset(breakdown.rate) === 'ucteBir20' ? " · 1/3'e %20" : ''}): {fmt(breakdown.kdv)}
-                      </div>
-                      <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>
-                        {breakdown.included ? 'Tutarlar KDV dahil girildi' : 'KDV tutarlara eklendi'}
-                      </div>
+                      {breakdown.tanimsiz ? (
+                        <div style={{ fontSize: 10, color: '#b9b4c9', fontStyle: 'italic' }}>
+                          KDV girilmedi — "İşleme Al" ile oran belirleyin
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 11, color: '#666' }}>KDV Hariç: {fmt(breakdown.net)}</div>
+                          <div style={{ fontSize: 11, color: COLORS.primary, fontWeight: 700 }}>
+                            KDV ({formatKdvRate(breakdown.rate)}
+                            {matchKdvPreset(breakdown.rate) === 'ucteBir20' ? " · 1/3'e %20" : ''}): {fmt(breakdown.kdv)}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>
+                            {breakdown.included ? 'Tutarlar KDV dahil girildi' : 'KDV tutarlara eklendi'}
+                          </div>
+                        </>
+                      )}
                     </>
                   )
                 })()}
@@ -1303,7 +1376,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                     value={matchKdvPreset(processForm.kdv_orani)}
                     onChange={e => {
                       const preset = KDV_PRESETS.find(p => p.key === e.target.value)
-                      if (preset) setProcessForm(p => ({ ...p, kdv_orani: String(preset.rate) }))
+                      if (preset) setProcessForm(p => ({ ...p, kdv_orani: preset.rate === '' ? '' : String(preset.rate) }))
                     }}
                   >
                     {KDV_PRESETS.map(preset => (
@@ -1448,7 +1521,7 @@ function Orders({ dealers, orders, products, loadAll, getDealerName, logAdminAct
                     value={matchKdvPreset(form.kdv_orani)}
                     onChange={e => {
                       const preset = KDV_PRESETS.find(p => p.key === e.target.value)
-                      if (preset) setForm(p => ({ ...p, kdv_orani: String(preset.rate) }))
+                      if (preset) setForm(p => ({ ...p, kdv_orani: preset.rate === '' ? '' : String(preset.rate) }))
                     }}
                   >
                     {KDV_PRESETS.map(preset => (
