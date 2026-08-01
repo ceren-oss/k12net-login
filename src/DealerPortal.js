@@ -1563,7 +1563,7 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                   <strong>{fmt(totalWithCargo)}</strong>
                   <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Ara Toplam (KDV Hariç): {fmt(total)}</div>
                   <div style={{ fontSize: 11, color: '#666' }}>Ara Toplam (KDV Dahil): {fmt(totalWithVat)}</div>
-                  <div style={{ fontSize: 11, color: '#666' }}>Kargo: {fmt(cargoFee)}</div>
+                  <div style={{ fontSize: 11, color: '#666' }}>Kargo: <strong style={{ color: COLORS.teal }}>Alıcı Ödemeli</strong></div>
                   <div style={{ fontSize: 11, color: '#666' }}>Ücretsiz Set: {teacherSetQty}</div>
                 </td>
                 <td style={S.td}>
@@ -1622,13 +1622,13 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
               <td colSpan={3} style={S.td}></td>
             </tr>
             <tr style={{ background: '#f8f4ff' }}>
-              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>TOPLAM KARGO (manuel):</td>
-              <td style={{ ...S.td, fontWeight: 800, color: COLORS.teal }}><strong>{fmt(filteredCargoTotal)}</strong></td>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.teal }}>KARGO:</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.teal }}><strong>Alıcı Ödemeli</strong></td>
               <td colSpan={3} style={S.td}></td>
             </tr>
             <tr style={{ background: '#f8f4ff' }}>
-              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.primary }}>TOPLAM (Kargo Dahil):</td>
-              <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}><strong>{fmt(filteredGrandTotal)}</strong></td>
+              <td colSpan={3} style={{ ...S.td, fontWeight: 800, textAlign: 'right', color: COLORS.primary }}>TOPLAM (KDV Dahil):</td>
+              <td style={{ ...S.td, fontWeight: 800, color: COLORS.primary }}><strong>{fmt(filteredTotalWithVat)}</strong></td>
               <td colSpan={3} style={S.td}></td>
             </tr>
             <tr style={{ background: '#f8f4ff' }}>
@@ -1820,16 +1820,16 @@ function PreOrders({ preOrders, products, schoolForms, createFormLink, approveFo
                 <strong>{fmt(getAmountWithVat(getPreOrderSubtotal(detail)))}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
-                <span>Kargo Bedeli</span>
-                <strong>{fmt(detailCargoFee)}</strong>
+                <span>Kargo</span>
+                <strong style={{ color: COLORS.teal }}>Alıcı Ödemeli</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
                 <span>Ücretsiz Öğretmen Seti</span>
                 <strong>{detailTeacherSetQty}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
-                <span>Kargo Dahil Toplam (KDV Dahil)</span>
-                <span>{fmt(getAmountWithVat(getPreOrderSubtotal(detail)) + detailCargoFee)}</span>
+                <span>Toplam (KDV Dahil)</span>
+                <span>{fmt(getAmountWithVat(getPreOrderSubtotal(detail)))}</span>
               </div>
               {detailNoteData.userNote && (
                 <div style={{ marginTop: 10, fontSize: 12, color: '#444' }}>
@@ -2044,7 +2044,7 @@ function Orders({ orders, products, isMobile, title = 'Siparişlerim', emptyText
               <td style={S.td}>{o.school_name || '-'}</td>
               <td style={S.td}>{o.season}</td>
               <td style={S.td}><strong>{fmt(o.total)}</strong></td>
-              <td style={S.td}>{fmt(getOrderCargoFee(o))}</td>
+              <td style={S.td}><strong style={{ color: COLORS.teal }}>Alıcı Ödemeli</strong></td>
               <td style={S.td}>{fmt(getOrderBoxFee(o))}</td>
               <td style={S.td}>{getOrderTeacherSetCount(o)}</td>
               <td style={S.td}><strong>{fmt(getOrderTotalWithCargo(o))}</strong></td>
@@ -2096,8 +2096,8 @@ function Orders({ orders, products, isMobile, title = 'Siparişlerim', emptyText
                     <strong>{fmt(detail.total || 0)}</strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
-                    <span>Kargo Bedeli</span>
-                    <strong>{fmt(getOrderCargoFee(detail))}</strong>
+                    <span>Kargo</span>
+                    <strong style={{ color: COLORS.teal }}>Alıcı Ödemeli</strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
                     <span>Kutu Bedeli</span>
@@ -2108,8 +2108,8 @@ function Orders({ orders, products, isMobile, title = 'Siparişlerim', emptyText
                     <strong>{getOrderTeacherSetCount(detail)}</strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 800, color: COLORS.primary }}>
-                    <span>Kargo Dahil Toplam</span>
-                    <span>{fmt(getOrderTotalWithCargo(detail))}</span>
+                    <span>Toplam (Kutu Dahil)</span>
+                    <span>{fmt(parseAmount(detail.total) + getOrderBoxFee(detail))}</span>
                   </div>
                 </div>
                 {detailClassRows.length > 0 && (
